@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Flask
+instance/
+.webassets-cache
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads and Exports
+backend/uploads/*
+backend/exports/*
+backend/annotated/*
+!backend/uploads/.gitkeep
+!backend/exports/.gitkeep
+!backend/annotated/.gitkeep
+
+# Test files
+backend/test_doc.*
+backend/backend.log
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build
+frontend/dist/
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Environment / API Keys（绝对不提交到 Git！）
+.env
+.env.local
+.env.*.local
+backend/.env
+# .env.example 允许提交（含占位符，不含真实密钥）
+!backend/.env.example
