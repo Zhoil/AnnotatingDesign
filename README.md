@@ -6,13 +6,15 @@
 
 ## 技术栈
 
+### 整体架构示意图
+![alt text](image.png)
+
 ### 前端
 | 技术 | 用途 |
 |------|------|
 | Vue 3 (Composition API) | 响应式 UI 框架 |
 | Pinia | 全局状态管理（文档、API 选择、聊天记录） |
 | Vite | 构建与热更新 |
-| marked.js | AI 回答的 Markdown 实时渲染 |
 
 ### 后端
 | 技术 | 用途 |
@@ -283,4 +285,4 @@ GraDesign_one/
 
 ## License
 
-MIT
+MIT......
