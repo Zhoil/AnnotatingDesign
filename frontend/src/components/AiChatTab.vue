@@ -5,8 +5,8 @@
       <div class="chat-header-left">
         <span class="chat-model-icon">🤖</span>
         <div>
-          <div class="chat-title">AI 对话助手</div>
-          <div class="chat-subtitle">DeepSeek-R1 驱动 · 联动当前文档</div>
+          <div class="chat-title">AI 助手</div>
+          <div class="chat-subtitle">DeepSeek-R1 驱动 · 联动当前页面</div>
         </div>
       </div>
       <button class="clear-btn" @click="clearChat" title="清空对话">
@@ -29,8 +29,8 @@
       <!-- 欢迎消息 -->
       <div v-if="messages.length === 0" class="welcome-msg">
         <div class="welcome-icon">💬</div>
-        <p class="welcome-text">你好！我是 DeepSeek-R1 驱动的 AI 助手。</p>
-        <p class="welcome-hint">{{ hasDocument ? '我已阅读当前文档，可以回答你关于文档的任何问题。' : '上传文档后，我能结合文档内容为你提供深度解析。' }}</p>
+        <p class="welcome-text">你好！我是你的 AI 阅读助手</p>
+        <p class="welcome-hint">{{ hasDocument ? '我已阅读当前文档，可以回答你关于文档的某些问题。' : '上传文档后，我能结合文档内容为你提供深度解析。' }}</p>
         <div class="suggest-btns" v-if="hasDocument">
           <button class="suggest-btn" @click="sendSuggest('请总结这篇文档的核心内容')">📋 总结核心内容</button>
           <button class="suggest-btn" @click="sendSuggest('这篇文档最重要的论点是什么？')">🎯 最重要的论点</button>
@@ -64,7 +64,7 @@
           <div class="typing-dots">
             <span></span><span></span><span></span>
           </div>
-          <div class="loading-text">DeepSeek-R1 思考中...</div>
+          <div class="loading-text">思考中...</div>
         </div>
       </div>
     </div>
