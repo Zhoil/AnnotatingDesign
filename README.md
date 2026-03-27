@@ -1,5 +1,16 @@
 # 智能文章重点标注与分析系统
 
+<p align="center">
+  <a href="README_EN.md"><img src="https://img.shields.io/badge/Language-English-blue?logo=googletranslate&logoColor=white" alt="English" /></a>
+  <a href="backend/requirements.txt"><img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python" /></a>
+  <a href="backend/app.py"><img src="https://img.shields.io/badge/Flask-Backend-000000?logo=flask&logoColor=white" alt="Flask" /></a>
+  <a href="frontend/package.json"><img src="https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue 3" /></a>
+  <a href="frontend/package.json"><img src="https://img.shields.io/badge/Node.js-16%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js" /></a>
+  <a href="https://platform.deepseek.com/"><img src="https://img.shields.io/badge/DeepSeek--R1-LLM-6C47FF?logo=openai&logoColor=white" alt="DeepSeek-R1" /></a>
+  <img src="https://img.shields.io/badge/Version-v1.0.0-orange.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License" />
+</p>
+
 > 基于 Vue 3 + Flask + DeepSeek-R1 / Qwen3.5-Plus 的 AI 文档深度分析与物理标注系统
 
 ---
@@ -285,4 +296,4 @@ GraDesign_one/
 
 ## License
 
-MIT......
+MIT
