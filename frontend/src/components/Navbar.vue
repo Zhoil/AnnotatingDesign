@@ -1,8 +1,8 @@
 <template>
   <nav class="navbar">
     <div class="navbar-brand">
-      <span class="logo">📊</span>
-      <span class="title">智能文章分析系统</span>
+      <span class="logo">📝</span>
+      <span class="title">AnnoPaper<em class="brand-accent">智阅</em></span>
     </div>
     
     <div class="navbar-menu">
@@ -65,10 +65,12 @@
 <script setup>
 import { ref } from 'vue'
 import { useDocumentStore } from '../stores/document'
+import { useToast } from '../composables/useToast.js'
 
 const emit = defineEmits(['show-upload', 'show-history'])
 const documentStore = useDocumentStore()
 const showDropdown = ref(false)
+const toast = useToast()
 
 const toggleDropdown = () => {
   showDropdown.value = !showDropdown.value
@@ -76,7 +78,7 @@ const toggleDropdown = () => {
 
 const handleExport = async () => {
   if (!documentStore.hasDocument) {
-    alert('请先上传并分析文档')
+    toast.warning('请先上传并分析文档')
     return
   }
   
@@ -85,16 +87,16 @@ const handleExport = async () => {
   
   try {
     await documentStore.exportDocument(recordId, format)
-    alert('导出成功！')
+    toast.success('导出成功！')
   } catch (error) {
-    alert('导出失败：' + error.message)
+    toast.error('导出失败：' + error.message)
   }
   
   showDropdown.value = false
 }
 
 const handleCompare = () => {
-  alert('文档对比功能：请先从历史记录中选择多个文档进行对比')
+  toast.info('文档对比功能：请先从历史记录中选择多个文档进行对比')
   showDropdown.value = false
 }
 
@@ -121,9 +123,6 @@ document.addEventListener('click', (e) => {
   justify-content: space-between;
   align-items: center;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  position: sticky;
-  top: 0;
-  z-index: 1000;
   backdrop-filter: blur(10px);
 }
 
@@ -152,6 +151,16 @@ document.addEventListener('click', (e) => {
   font-weight: 700;
   color: white;
   text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
+.brand-accent {
+  font-style: normal;
+  color: #ffd700;
+  font-size: 26px;
+  text-shadow: 0 0 8px rgba(255, 215, 0, 0.6);
 }
 
 .navbar-menu {

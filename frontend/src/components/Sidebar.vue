@@ -54,7 +54,7 @@ const handleScrollTo = (highlightId) => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 140px);
+  height: 100%;
 }
 
 .tab-bar {

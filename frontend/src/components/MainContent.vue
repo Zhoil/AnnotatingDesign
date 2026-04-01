@@ -29,6 +29,7 @@ const handleScrollTo = (highlightId) => {
 <style scoped>
 .main-content {
   flex: 1;
+  min-height: 0;
   padding: 20px;
   overflow: hidden;
 }

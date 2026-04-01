@@ -80,9 +80,11 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useDocumentStore } from '../stores/document'
+import { useToast } from '../composables/useToast.js'
 
 const emit = defineEmits(['close'])
 const documentStore = useDocumentStore()
+const toast = useToast()
 
 const loading = ref(true)
 const currentPage = ref(1)
@@ -119,7 +121,7 @@ const loadRecord = async (recordId) => {
     await documentStore.fetchHistoryDetail(recordId)
     emit('close')
   } catch (error) {
-    alert('加载记录失败：' + error.message)
+    toast.error('加载记录失败：' + error.message)
   }
 }
 
@@ -128,9 +130,9 @@ const handleExport = async (recordId) => {
   
   try {
     await documentStore.exportDocument(recordId, format)
-    alert('导出成功！')
+    toast.success('导出成功！')
   } catch (error) {
-    alert('导出失败：' + error.message)
+    toast.error('导出失败：' + error.message)
   }
 }
 
@@ -144,7 +146,7 @@ const handleDelete = async (recordId) => {
         goToPage(currentPage.value - 1)
       }
     } catch (error) {
-      alert('删除失败：' + error.message)
+      toast.error('删除失败：' + error.message)
     }
   }
 }
