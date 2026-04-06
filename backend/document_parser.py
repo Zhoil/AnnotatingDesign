@@ -3,18 +3,18 @@ from bs4 import BeautifulSoup
 from docx import Document
 import re
 import markdown
-from pdf_parser_enhanced import EnhancedPDFParser
+from pdf_parser_docling import DoclingPDFParser
 from web_parser_enhanced import EnhancedWebParser
 
 class DocumentParser:
     """
     文档解析器
     支持格式: PDF, Word, HTML, Markdown, 网页URL
-    PDF 使用增强版解析器，支持表格和图片提取
+    PDF 使用 Docling 解析器（模型缓存: backend/.hf_cache）
     """
-    
+
     def __init__(self):
-        self.enhanced_pdf_parser = EnhancedPDFParser()
+        self.pdf_parser = DoclingPDFParser()
         self.enhanced_web_parser = EnhancedWebParser()
     
     def parse(self, filepath):
@@ -26,8 +26,8 @@ class DocumentParser:
         file_size = os.path.getsize(filepath)
             
         if ext == '.pdf':
-            # PDF: 使用增强版解析器（支持表格、图片）
-            result = self.enhanced_pdf_parser.parse_pdf_enhanced(filepath)
+            # PDF: 使用 Docling 解析器（模型缓存: backend/.hf_cache）
+            result = self.pdf_parser.parse_pdf(filepath)
             if result:
                 result['file_size'] = file_size
                 result['filepath'] = filepath

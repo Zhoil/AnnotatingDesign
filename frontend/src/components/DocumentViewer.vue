@@ -17,13 +17,24 @@
         ref="pdfIframe"
       ></iframe>
       
-      <!-- 网页HTML查看器 -->
+      <!-- 网页HTML查看器：最大限度展示原始界面 -->
       <iframe 
         v-else-if="document?.is_web && document?.annotated_url"
         :src="document.annotated_url"
         class="web-viewer"
         sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+        referrerpolicy="no-referrer"
+        :style="{ minHeight: '600px' }"
       ></iframe>
+      
+      <!-- 网页降级：Word样式格式化展示（无标注URL时） -->
+      <div v-else-if="document?.is_web && !document?.annotated_url" class="web-fallback">
+        <div class="web-fallback-toolbar">
+          <span class="toolbar-icon">🌐</span>
+          <span class="toolbar-text">网页内容 · 文档模式展示</span>
+        </div>
+        <div class="web-fallback-content" v-html="highlightedContent"></div>
+      </div>
       
       <!-- Word 文档：mammoth.js 格式化渲染 -->
       <div v-else-if="isDocx" class="docx-preview">
@@ -323,6 +334,56 @@ defineExpose({ scrollToHighlight })
   width: 100%;
   border: none;
   background: white;
+}
+
+/* 网页降级：Word样式展示 */
+.web-fallback {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.web-fallback-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px;
+  background: #f0f7ff;
+  border-bottom: 1px solid #d0e3ff;
+  flex-shrink: 0;
+  font-size: 14px;
+  color: #374151;
+}
+
+.web-fallback-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 40px 56px;
+  background: white;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #111;
+}
+
+.web-fallback-content :deep(p) {
+  margin-bottom: 12px;
+}
+
+.web-fallback-content :deep(h1),
+.web-fallback-content :deep(h2),
+.web-fallback-content :deep(h3) {
+  margin: 20px 0 10px;
+  color: #1a1a1a;
+}
+
+.web-fallback-content :deep(.highlight) {
+  padding: 2px 1px;
+  cursor: pointer;
+  border-radius: 2px;
 }
 
 /* ===== DOCX 渲染区 ===== */

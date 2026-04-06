@@ -1,13 +1,24 @@
 import sys
+import os
+
 # 强制 stdout/stderr 使用 UTF-8，避免 Windows GBK 编码无法输出 emoji 导致请求失败
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
+# ── Docling / HuggingFace 模型缓存路径配置 ─────────────────
+# 将模型下载到项目本地目录，避免占用 C 盘空间
+# 必须在 import docling 之前设置
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+hf_cache_dir = os.path.join(backend_dir, '.hf_cache')
+os.makedirs(hf_cache_dir, exist_ok=True)
+os.environ['HF_HOME'] = hf_cache_dir
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'  # 国内镜像加速
+print(f"📦 HuggingFace 模型缓存路径: {hf_cache_dir}")
+
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import os
 from datetime import datetime
 from werkzeug.utils import secure_filename
 import json
@@ -21,16 +32,19 @@ CORS(app)
 # 配置
 UPLOAD_FOLDER = 'uploads'
 ANNOTATED_FOLDER = 'annotated'
+PARSED_FOLDER = 'parsed_output'
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'doc', 'html', 'htm', 'md', 'markdown'}
 MAX_FILE_SIZE = 16 * 1024 * 1024  # 16MB
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['ANNOTATED_FOLDER'] = ANNOTATED_FOLDER
+app.config['PARSED_FOLDER'] = PARSED_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 
 # 确保目录存在
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(ANNOTATED_FOLDER, exist_ok=True)
+os.makedirs(PARSED_FOLDER, exist_ok=True)
 
 @app.route('/files/<path:filename>')
 def serve_file(filename):
@@ -45,6 +59,61 @@ db = Database()
 def allowed_file(filename):
     """检查文件扩展名是否允许"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def _save_parsed_output(unique_filename, text_content, structured_content, metadata):
+    """
+    将解析后的文本结构及内容保存到 parsed_output/ 目录，方便查看调试。
+    生成两个文件：
+      - {name}_text.txt      纯文本内容（LLM 分析用的完整文本）
+      - {name}_structure.json 结构化数据（文本块、表格、图片、元数据）
+    """
+    try:
+        base_name = os.path.splitext(unique_filename)[0]
+        parsed_dir = app.config['PARSED_FOLDER']
+
+        # 1. 保存纯文本
+        text_path = os.path.join(parsed_dir, f"{base_name}_text.txt")
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(text_content)
+
+        # 2. 保存结构化数据（JSON）
+        structure_path = os.path.join(parsed_dir, f"{base_name}_structure.json")
+        structure_data = {
+            'metadata': metadata,
+            'total_items': len(structured_content),
+            'text_blocks': [],
+            'tables': [],
+            'images': []
+        }
+
+        for item in structured_content:
+            item_type = item.get('type', 'unknown')
+            entry = {
+                'page': item.get('page'),
+                'content': item.get('content', ''),
+            }
+            if item.get('bbox'):
+                entry['bbox'] = item['bbox']
+            if item.get('metadata'):
+                entry['metadata'] = item['metadata']
+            if item.get('surrounding_text'):
+                entry['surrounding_text'] = item['surrounding_text']
+            if item.get('table_data'):
+                entry['table_data'] = item['table_data']
+
+            if item_type == 'text':
+                structure_data['text_blocks'].append(entry)
+            elif item_type == 'table':
+                structure_data['tables'].append(entry)
+            elif item_type == 'image':
+                structure_data['images'].append(entry)
+
+        with open(structure_path, 'w', encoding='utf-8') as f:
+            json.dump(structure_data, f, ensure_ascii=False, indent=2)
+
+        print(f"📁 解析结果已保存: {text_path}, {structure_path}")
+    except Exception as e:
+        print(f"⚠️ 保存解析结果失败: {str(e)}")
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
@@ -83,6 +152,10 @@ def upload_file():
             if ext == '.doc':
                 return jsonify({'error': '无法解析 .doc 文件。请确认 Microsoft Word 已安装，或将文件另存为 .docx 格式后重新上传。'}), 500
             return jsonify({'error': '文档内容为空'}), 500
+
+        # ── 保存解析结果到 parsed_output/ 以便查看 ──
+        _save_parsed_output(unique_filename, text_content, structured_content, metadata)
+
         api_provider = request.form.get('api_provider', 'deepseek')
         analysis_result = analyzer.analyze(text_content, structured_data={
             'filepath': filepath,
@@ -190,7 +263,7 @@ def upload_url():
                 with open(annotated_path, 'w', encoding='utf-8') as f:
                     f.write(annotated_html)
                 
-                annotated_url = f"/files/{annotated_filename}"
+                annotated_url = f"http://localhost:5000/files/{annotated_filename}"
                 print(f"✅ 网页HTML标注完成: {annotated_url}")
             except Exception as e:
                 print(f"⚠️ 网页HTML标注失败: {str(e)}")

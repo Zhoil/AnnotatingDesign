@@ -5,33 +5,56 @@
     </div>
     
     <div class="summary-sections">
-      <div 
-        v-for="section in sections" 
-        :key="section.key"
-        class="summary-section"
-      >
+      <!-- 核心观点 -->
+      <div class="summary-section">
         <div class="section-header">
-          <span class="section-icon">{{ section.icon }}</span>
-          <h4 class="section-subtitle">{{ section.title }}</h4>
+          <span class="section-icon">💡</span>
+          <h4 class="section-subtitle">核心观点</h4>
         </div>
-        
         <div class="section-content">
-          <div 
-            v-if="summary[section.key] && summary[section.key].length > 0"
-            class="content-list"
-          >
-            <div 
-              v-for="(item, index) in summary[section.key]" 
-              :key="index"
-              class="content-item"
-            >
+          <div v-if="corePoints.length > 0" class="content-list">
+            <div v-for="(item, index) in corePoints" :key="index" class="content-item">
               <span class="item-bullet">•</span>
               <span class="item-text">{{ item }}</span>
             </div>
           </div>
-          <div v-else class="empty-state">
-            暂无{{ section.title }}
+          <div v-else class="empty-state">暂无核心观点</div>
+        </div>
+      </div>
+
+      <!-- 关键数据：卡片网格布局 -->
+      <div class="summary-section">
+        <div class="section-header">
+          <span class="section-icon">📈</span>
+          <h4 class="section-subtitle">关键数据</h4>
+        </div>
+        <div class="section-content">
+          <div v-if="keyDataItems.length > 0" class="data-grid">
+            <div v-for="(item, index) in keyDataItems" :key="index" class="data-card">
+              <div class="data-value">{{ item.value || '--' }}</div>
+              <div class="data-label">{{ item.label || '指标' }}</div>
+              <div v-if="item.context" class="data-context">{{ item.context }}</div>
+              <div v-if="item.page" class="data-page">第 {{ item.page }} 页</div>
+            </div>
           </div>
+          <div v-else class="empty-state">本文档未提取到定量数据</div>
+        </div>
+      </div>
+
+      <!-- 结论总结 -->
+      <div class="summary-section">
+        <div class="section-header">
+          <span class="section-icon">✅</span>
+          <h4 class="section-subtitle">结论总结</h4>
+        </div>
+        <div class="section-content">
+          <div v-if="conclusions.length > 0" class="content-list">
+            <div v-for="(item, index) in conclusions" :key="index" class="content-item">
+              <span class="item-bullet">•</span>
+              <span class="item-text">{{ item }}</span>
+            </div>
+          </div>
+          <div v-else class="empty-state">暂无结论总结</div>
         </div>
       </div>
     </div>
@@ -49,11 +72,23 @@ const summary = computed(() => {
   return doc?.summary || {}
 })
 
-const sections = [
-  { key: 'core_points', title: '核心观点', icon: '💡' },
-  { key: 'key_data', title: '关键数据', icon: '📈' },
-  { key: 'conclusions', title: '结论总结', icon: '✅' }
-]
+const corePoints = computed(() => summary.value.core_points || [])
+
+const keyDataItems = computed(() => {
+  const raw = summary.value.key_data || []
+  // 兼容旧格式（纯字符串数组）和新格式（对象数组）
+  return raw.map(item => {
+    if (typeof item === 'string') {
+      return { label: '数据', value: item, context: '', page: null }
+    }
+    return item
+  })
+})
+
+const conclusions = computed(() => {
+  const raw = summary.value.conclusions || []
+  return raw.filter(c => c && c.trim())
+})
 </script>
 
 <style scoped>
@@ -128,6 +163,53 @@ const sections = [
   font-size: 14px;
   color: #2c3e50;
   line-height: 1.8;
+}
+
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.data-card {
+  background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+  border: 1px solid #667eea30;
+  border-radius: 10px;
+  padding: 16px 14px;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.data-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+}
+
+.data-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #667eea;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.data-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 4px;
+}
+
+.data-context {
+  font-size: 11px;
+  color: #7f8c8d;
+  line-height: 1.4;
+}
+
+.data-page {
+  font-size: 10px;
+  color: #a0aec0;
+  margin-top: 4px;
 }
 
 .content-list {

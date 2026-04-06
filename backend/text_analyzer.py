@@ -1,11 +1,10 @@
 import re
-import io
+import unicodedata
 import jieba
 import jieba.analyse
 from difflib import SequenceMatcher
 from llm_service import LLMService
-import fitz  # PyMuPDF - 合并 PDF 覆盖层
-import pdfplumber  # 字符级精确文本定位
+import fitz  # PyMuPDF — 统一文本搜索 + 原生高亮标注引擎
 import os
 from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
@@ -20,11 +19,14 @@ class TextAnalyzer:
         self.llm_service = LLMService()
         # 存储结构化数据（用于精准定位）
         self.current_structured_data = None
-        print("LLM 服务已启用（DeepSeek-R1 / Qwen3.5-Plus）")
+        print("LLM 服务已启用")
     
     def analyze(self, text, structured_data=None, api_provider='deepseek'):
         """
         分析文本，返回完整的分析结果
+        两阶段处理：
+          阶段1：提取图片信息 → 独立交给大模型分析
+          阶段2：图片分析结果 + 主文本 → 一起送入大模型做最终分析
             
         Args:
             text: 待分析文本
@@ -36,26 +38,35 @@ class TextAnalyzer:
 
         print(f"使用 {api_provider} 大模型API进行文本分析...")
 
-        # 获取PDF路径和文件大小
-        pdf_path = structured_data.get('filepath') if structured_data else None
+        # 获取文件路径和文件大小
+        file_path = structured_data.get('filepath') if structured_data else None
         file_size = structured_data.get('file_size', 0) if structured_data else 0
 
-        # 如果有结构化数据，在提示词中添加额外信息
-        extra_context = ""
+        # ── 阶段1：图片独立处理 ──────────────────────────────
+        image_descriptions = ''
         if structured_data and structured_data.get('structured_content'):
             sc = structured_data['structured_content']
+            image_items = [x for x in sc if x['type'] == 'image']
             table_count = len([x for x in sc if x['type'] == 'table'])
-            image_count = len([x for x in sc if x['type'] == 'image'])
 
-            if table_count > 0 or image_count > 0:
-                extra_context = f"\n\n[文档结构信息] 此文档包含 {table_count} 个表格和 {image_count} 张图片，请结合这些结构化内容进行分析。"
+            if image_items:
+                print(f"🖼️ 阶段1：独立分析 {len(image_items)} 张图片...")
+                image_descriptions = self.llm_service.analyze_images(image_items, provider=api_provider)
+                if image_descriptions:
+                    print(f"✅ 图片独立分析完成，结果长度: {len(image_descriptions)} 字")
 
-        # 调用大模型
+            if table_count > 0 or image_items:
+                extra_info = f"\n\n[文档结构信息] 此文档包含 {table_count} 个表格和 {len(image_items)} 张图片。"
+                text += extra_info
+
+        # ── 阶段2：主文本 + 图片分析结果 → 最终分析 ─────────
+        print(f"📝 阶段2：综合分析（文件直传 → 降级文本提取）...")
         llm_result = self.llm_service.analyze_text(
-            text + extra_context,
+            text,
             provider=api_provider,
-            pdf_path=pdf_path,
-            file_size=file_size
+            file_path=file_path,
+            file_size=file_size,
+            image_descriptions=image_descriptions
         )
 
         if llm_result:
@@ -104,16 +115,24 @@ class TextAnalyzer:
             evidence_list = arg.get('evidence', [])
             importance  = arg.get('importance', 95)
             point_page  = arg.get('point_page')
-            point_ctx   = arg.get('point_context', '')   # 新字段：上下文句子帮助定位
-            ann_label   = arg.get('annotation_label', '\u6838心论点')  # 新字段：边注标签
+            point_ctx   = arg.get('point_context', '')
+            ann_label   = arg.get('annotation_label', '\u6838心论点')
 
-            # evidence 字符串展示（兼容旧格式）
+            # evidence 字符串展示
             evidence_texts = []
+            evidence_data = []  # 结构化 evidence 数据（传给前端）
             for ev in evidence_list:
                 if isinstance(ev, dict):
-                    evidence_texts.append(ev.get('text', ''))
+                    ev_text = ev.get('text', '')
+                    evidence_texts.append(ev_text)
+                    evidence_data.append({
+                        'text': ev_text,
+                        'page': ev.get('page'),
+                        'context': ev.get('context', '')
+                    })
                 else:
                     evidence_texts.append(str(ev))
+                    evidence_data.append({'text': str(ev), 'page': None, 'context': ''})
 
             evidence_str = "\n".join([f"• {ev}" for ev in evidence_texts])
             point_annotation = f"【{ann_label}】\n{point_text}\n\n【支撑论据】\n{evidence_str}"
@@ -122,12 +141,15 @@ class TextAnalyzer:
             raw_llm_keypoints.append({
                 'id':          point_id,
                 'content':     point_text,
-                'context':     point_ctx,       # 上下文传递给定位工具
+                'context':     point_ctx,
                 'category':    '核心论点',
                 'importance':  importance,
                 'annotation':  point_annotation,
                 'fixed_color': '#ff6b6b',
                 'page':        point_page,
+                'evidence':    evidence_data,  # 结构化论据数据（前端展开用）
+                'annotation_label': ann_label,
+                'rationale':   arg.get('rationale', ''),
             })
 
             # 每个论据独立高亮
@@ -147,7 +169,7 @@ class TextAnalyzer:
                     'context':     ev_ctx,
                     'category':    '支撑论据',
                     'importance':  max(30, importance - 40),
-                    'annotation':  f"【支撑论据】针对论点：{point_text[:30]}...",
+                    'annotation':  f"【支撑论据】针对论点：{point_text[:50]}...",
                     'fixed_color': '#51cf66',
                     'page':        ev_page,
                 })
@@ -157,7 +179,7 @@ class TextAnalyzer:
         
         summary = {
             'core_points': [arg.get('point', '') for arg in llm_result.get('core_arguments', [])],
-            'key_data': [],
+            'key_data': llm_result.get('key_data', []),  # 结构化关键数据（label/value/context/page）
             'conclusions': [llm_result.get('summary', '')]
         }
         
@@ -180,7 +202,7 @@ class TextAnalyzer:
         matched_keypoints = []
         sentences = self._split_sentences(text)
         
-        # 获取PDF路径（如果有）
+        # 获取文件路径（如果是 PDF 则用于精准定位）
         pdf_path = None
         if self.current_structured_data and self.current_structured_data.get('filepath'):
             filepath = self.current_structured_data['filepath']
@@ -232,8 +254,11 @@ class TextAnalyzer:
                     'annotation': final_annotation,
                     'color': final_color,
                     'match_method': match_method,
-                    'page': kp_page,  # 添加页码信息
-                    'pdf_location': pdf_location  # PDF定位信息 (page_num, bbox)
+                    'page': kp_page,
+                    'pdf_location': pdf_location,
+                    'evidence': llm_kp.get('evidence', []),           # 结构化论据（前端展开用）
+                    'annotation_label': llm_kp.get('annotation_label', ''),  # 标注标签
+                    'rationale': llm_kp.get('rationale', ''),         # 评分理由
                 }
                 matched_keypoints.append(keypoint)
         
@@ -410,213 +435,236 @@ class TextAnalyzer:
 
     def annotate_pdf(self, input_path, highlights, output_path):
         """
-        使用 pdfplumber + reportlab + PyMuPDF 的三层架构进行精确 PDF 标注
-    
-        流程：
-          1. pdfplumber — 字符级搜索，获得每行精确 bbox（支持多行文本）
-          2. reportlab — 创建全透明高亮覆盖层（半透明彩色框 + 左侧分类竖线）
-          3. PyMuPDF  — 将覆盖层叠加到原始 PDF
-    
+        PyMuPDF 单引擎 PDF 标注（所见即所搜）
+
+        使用 page.search_for() 搜索文本 + page.add_highlight_annot() 添加原生高亮，
+        与解析阶段的 page.get_text() 共享同一文本源，彻底消除文本源断裂。
+
         返回: [{'id': hl_id, 'page': page_num}, ...]
         """
-        from reportlab.pdfgen import canvas as rl_canvas
-        from reportlab.lib.colors import Color
-    
         try:
-            # ── Step 1: pdfplumber 字符级定位 ──────────────────────────
-            print("📍 pdfplumber 字符级定位文本坐标...")
-            location_map = {}  # {hl_id: [{'x0','top','x1','bottom','page_idx','page_w','page_h'}, ...]}
-    
-            with pdfplumber.open(input_path) as pdf:
-                n_pages   = len(pdf.pages)
-                page_sizes = [(p.width, p.height) for p in pdf.pages]
-    
-                for hl in highlights:
-                    text   = hl['text'].strip()
-                    hl_id  = hl['id']
-                    page_hint = hl.get('page')  # 1-indexed 页码提示
-    
-                    if not text:
-                        location_map[hl_id] = []
-                        continue
-    
-                    # 确定搜索页面范围（优先在提示页附近搜索）
-                    if page_hint and 1 <= page_hint <= n_pages:
-                        seen = {}
-                        for pg in [page_hint - 1,
-                                   page_hint - 2 if page_hint > 1 else None,
-                                   page_hint if page_hint < n_pages else None]:
-                            if pg is not None and pg not in seen:
-                                seen[pg] = True
-                        search_range = list(seen.keys())
-                    else:
-                        search_range = list(range(n_pages))
-    
-                    found_locs = []
-                    for page_idx in search_range:
-                        bboxes = self._find_text_in_page(pdf.pages[page_idx], text)
-                        if bboxes:
-                            pw, ph = page_sizes[page_idx]
-                            for bbox in bboxes:
-                                bbox.update({'page_idx': page_idx,
-                                             'page_w': pw, 'page_h': ph})
-                            found_locs.extend(bboxes)
-                            print(f"  \u2705 \u7b2c{page_idx + 1}\u9875: {text[:30]}...")
-                            break  # \u627e\u5230\u5373\u505c
-    
-                    if not found_locs:
-                        print(f"  ⚠️ 未定位: {text[:30]}...")
-                    location_map[hl_id] = found_locs
-    
-            # ── Step 2: reportlab 创建高亮覆盖层 ──────────────────────
-            print("🎨 reportlab 创建高亮覆盖层...")
-            hl_map = {hl['id']: hl for hl in highlights}
-    
-            overlay_buf = io.BytesIO()
-            c = rl_canvas.Canvas(overlay_buf)
-    
-            for page_idx, (pw, ph) in enumerate(page_sizes):
-                c.setPageSize((pw, ph))
-    
-                for hl_id, locs in location_map.items():
-                    page_locs = [l for l in locs if l.get('page_idx') == page_idx]
-                    if not page_locs:
-                        continue
-    
-                    hl = hl_map.get(hl_id)
-                    if not hl:
-                        continue
-    
-                    # 解析颜色
-                    hex_col = hl['color'].lstrip('#')
-                    rc = int(hex_col[0:2], 16) / 255.0
-                    gc = int(hex_col[2:4], 16) / 255.0
-                    bc = int(hex_col[4:6], 16) / 255.0
-    
-                    fill_col   = Color(rc, gc, bc, alpha=0.22)   # 半透明填充
-                    border_col = Color(rc, gc, bc, alpha=0.60)   # 边框
-                    bar_col    = Color(rc, gc, bc, alpha=0.92)   # 左侧竖线
-    
-                    for loc in page_locs:
-                        # 坐标转换：
-                        #   pdfplumber: 左上角原点, top = 距页面顶部的距离 (y 向下增)
-                        #   reportlab : 左下角原点, y 向上增
-                        x0 = loc['x0']
-                        y0 = ph - loc['bottom']   # reportlab 中 bbox 的底边 y
-                        w  = loc['x1'] - loc['x0']
-                        h  = loc['bottom'] - loc['top']
-    
-                        # 半透明高亮矩形
-                        c.setFillColor(fill_col)
-                        c.setStrokeColor(border_col)
-                        c.setLineWidth(0.4)
-                        c.rect(x0, y0, w, h, fill=1, stroke=1)
-    
-                        # 左侧分类竖线标记
-                        bar_x = max(3.0, x0 - 4.5)
-                        c.setStrokeColor(bar_col)
-                        c.setLineWidth(2.8)
-                        c.line(bar_x, y0, bar_x, y0 + h)
-    
-                c.showPage()
-    
-            c.save()
-            overlay_buf.seek(0)
-    
-            # ── Step 3: PyMuPDF 叠加到原始 PDF ───────────────────────
-            print("🔗 PyMuPDF 叠加覆盖层...")
-            original = fitz.open(input_path)
-            overlay  = fitz.open("pdf", overlay_buf.read())
-    
-            for pg_num in range(len(original)):
-                if pg_num < len(overlay):
-                    original[pg_num].show_pdf_page(
-                        original[pg_num].rect, overlay, pg_num
-                    )
-    
-            original.save(output_path, garbage=4, deflate=True)
-            original.close()
-            overlay.close()
-    
-            # 构建 meta_map（返回每个高亮的实际页码）
+            doc = fitz.open(input_path)
+            n_pages = len(doc)
             meta_map = []
+            located = 0
+
+            # 检测 PDF 类型（辅助调试）
+            pdf_type = self._detect_pdf_type(doc)
+            print(f"\U0001f4c4 PDF 类型检测: {pdf_type} (producer={doc.metadata.get('producer','')}, creator={doc.metadata.get('creator','')})")
+
             for hl in highlights:
-                locs     = location_map.get(hl['id'], [])
-                page_num = (locs[0]['page_idx'] + 1) if locs else (hl.get('page') or 1)
-                meta_map.append({'id': hl['id'], 'page': page_num})
-    
-            located = sum(1 for locs in location_map.values() if locs)
+                text = hl['text'].strip()
+                hl_id = hl['id']
+                page_hint = hl.get('page')
+
+                if not text:
+                    meta_map.append({'id': hl_id, 'page': page_hint or 1})
+                    continue
+
+                # 解析颜色
+                hex_col = hl['color'].lstrip('#')
+                color = (
+                    int(hex_col[0:2], 16) / 255.0,
+                    int(hex_col[2:4], 16) / 255.0,
+                    int(hex_col[4:6], 16) / 255.0
+                )
+
+                # 确定搜索页面顺序（优先提示页附近 → 其余页面）
+                if page_hint and 1 <= page_hint <= n_pages:
+                    search_pages = [page_hint - 1]
+                    if page_hint > 1:
+                        search_pages.append(page_hint - 2)
+                    if page_hint < n_pages:
+                        search_pages.append(page_hint)
+                    remaining = [i for i in range(n_pages) if i not in search_pages]
+                else:
+                    search_pages = list(range(n_pages))
+                    remaining = []
+
+                found = False
+                for page_idx in search_pages + remaining:
+                    found = self._try_highlight_on_page(doc[page_idx], text, color)
+                    if found:
+                        meta_map.append({'id': hl_id, 'page': page_idx + 1})
+                        located += 1
+                        print(f"  ✅ 第{page_idx + 1}页: {text[:30]}...")
+                        break
+
+                if not found:
+                    meta_map.append({'id': hl_id, 'page': page_hint or 1})
+                    print(f"  ⚠️ 未定位: {text[:30]}...")
+
+            doc.save(output_path, garbage=4, deflate=True)
+            doc.close()
+
             print(f"✅ 标注完成：{located}/{len(highlights)} 处成功定位")
             return meta_map
-    
+
         except Exception as e:
             print(f"PDF 标注失败: {str(e)}")
             import traceback
             traceback.print_exc()
             return []
-    
-    def _find_text_in_page(self, page, target_text):
+
+    def _normalize_for_search(self, text):
+        """统一文本归一化：NFKC + 去零宽字符 + 空白归一化 + 去换行"""
+        t = unicodedata.normalize('NFKC', text)
+        t = re.sub(r'[\u200b\u200c\u200d\ufeff\u00ad\u200e\u200f]', '', t)
+        t = t.replace('\n', ' ').replace('\r', '')
+        t = re.sub(r'\s+', ' ', t).strip()
+        return t
+
+    def _detect_pdf_type(self, doc):
         """
-        使用 pdfplumber 字符级定位文本，支持多行。
-    
-        算法：
-          1. 提取页面所有非空白字符，拼接成无空格字符串
-          2. 将目标文本同样去空格，用前 50 个字符定位起始位置
-          3. 按 top 坐标近似分行，每行生成一个 bbox
-    
-        返回: [{'x0', 'top', 'x1', 'bottom'}, ...] 或 []
+        检测 PDF 生成工具类型，用于针对性文本处理策略
+        返回: 'latex' | 'word' | 'wps' | 'markdown' | 'chrome' | 'generic'
         """
-        chars = page.chars
-        if not chars:
-            return []
-    
-        # 过滤空白字符
-        non_blank = [c for c in chars if c['text'].strip()]
-        if not non_blank:
-            return []
-    
-        char_str     = ''.join(c['text'] for c in non_blank)
-        target_clean = re.sub(r'\s+', '', target_text)
-    
-        # 用前 50 字符定位（太短则只用前 20 个）
-        prefix_len = min(len(target_clean), 50)
-        prefix = target_clean[:prefix_len].lower()
-        idx = char_str.lower().find(prefix)
-    
-        if idx == -1 and prefix_len > 20:
-            prefix = target_clean[:20].lower()
-            idx = char_str.lower().find(prefix)
-    
-        if idx == -1:
-            return []
-    
-        # 匹配字符范围
-        end_idx      = min(idx + len(target_clean), len(non_blank))
-        matched_chars = non_blank[idx:end_idx]
-        if not matched_chars:
-            return []
-    
-        # 按行分组（top 差异 < 4pt 视为同一行）
-        LINE_TOL = 4
-        lines, cur = [], [matched_chars[0]]
-        for ch in matched_chars[1:]:
-            if abs(ch['top'] - cur[-1]['top']) > LINE_TOL:
-                lines.append(cur)
-                cur = [ch]
-            else:
-                cur.append(ch)
-        lines.append(cur)
-    
-        # 每行生成一个 bbox（加小量 padding 使高亮更自然）
-        bboxes = []
-        for line_chars in lines:
-            bboxes.append({
-                'x0':    min(c['x0']     for c in line_chars) - 0.5,
-                'top':   min(c['top']    for c in line_chars) - 0.5,
-                'x1':    max(c['x1']     for c in line_chars) + 0.5,
-                'bottom':max(c['bottom'] for c in line_chars) + 0.5,
-            })
-        return bboxes
+        producer = (doc.metadata.get('producer', '') or '').lower()
+        creator = (doc.metadata.get('creator', '') or '').lower()
+        combined = producer + ' ' + creator
+
+        if any(k in combined for k in ['latex', 'tex', 'pdftex', 'xetex', 'luatex']):
+            return 'latex'
+        if any(k in combined for k in ['microsoft word', 'ms word', 'docx']):
+            return 'word'
+        if 'wps' in combined:
+            return 'wps'
+        if any(k in combined for k in ['markdown', 'pandoc', 'typora']):
+            return 'markdown'
+        if any(k in combined for k in ['chrome', 'chromium', 'headless']):
+            return 'chrome'
+        return 'generic'
+
+    def _try_highlight_on_page(self, page, text, color):
+        """
+        多策略搜索 + 原生高亮标注（10 级递进策略）
+
+        针对不同 PDF 底层结构的文本差异进行适配：
+        LaTeX PDF: 连字符(ﬁ→fi)、特殊排版符号
+        Word PDF: 智能引号、特殊破折号
+        Markdown PDF: 多余空白、代码块格式差异
+        通用: 零宽字符、跨行文本、空白差异
+        """
+        # ── 策略 1：原始文本直接搜索 ──
+        quads = page.search_for(text, quads=True)
+        if quads:
+            return self._apply_highlight(page, quads, color)
+
+        # 获取页面原始文本用于后续匹配
+        page_text = page.get_text("text")
+
+        # ── 策略 2：全量归一化搜索（NFKC + 去零宽 + 去换行 + 空白归一化）──
+        norm_text = self._normalize_for_search(text)
+        if norm_text != text:
+            quads = page.search_for(norm_text, quads=True)
+            if quads:
+                return self._apply_highlight(page, quads, color)
+
+        # ── 策略 3：智能引号/破折号替换（Word PDF 常见）──
+        smart_text = norm_text
+        smart_text = smart_text.replace('\u2018', "'").replace('\u2019', "'")
+        smart_text = smart_text.replace('\u201c', '"').replace('\u201d', '"')
+        smart_text = smart_text.replace('\u2013', '-').replace('\u2014', '-')
+        smart_text = smart_text.replace('\u00a0', ' ')  # non-breaking space
+        if smart_text != norm_text:
+            quads = page.search_for(smart_text, quads=True)
+            if quads:
+                return self._apply_highlight(page, quads, color)
+
+        # ── 策略 4：PyMuPDF 页面文本子串匹配 → 提取精确片段搜索 ──
+        norm_page = self._normalize_for_search(page_text)
+        norm_query = self._normalize_for_search(text)
+        if norm_query in norm_page:
+            # 在归一化页面文本中找到了，用逐步截短的方式在原始PDF中搜索
+            for seg_len in [len(norm_query), 80, 50, 30, 20]:
+                if seg_len > len(norm_query):
+                    continue
+                snippet = norm_query[:seg_len]
+                quads = page.search_for(snippet, quads=True)
+                if quads:
+                    return self._apply_highlight(page, quads, color)
+
+        # ── 策略 5：中文标点变体（全角↔半角）──
+        punct_map = str.maketrans('，。！？；：（）', ',.!?;:()')
+        punct_text = norm_text.translate(punct_map)
+        if punct_text != norm_text:
+            quads = page.search_for(punct_text, quads=True)
+            if quads:
+                return self._apply_highlight(page, quads, color)
+
+        # ── 策略 6：Docling 与 PyMuPDF 文本差异对齐 ──
+        # Docling 提取的文本可能有额外空格（如中英文间），而 PyMuPDF 没有
+        # 尝试去除所有空格后搜索
+        no_space = re.sub(r'\s', '', norm_query)
+        page_no_space = re.sub(r'\s', '', page_text)
+        if len(no_space) >= 10 and no_space in page_no_space:
+            # 找到无空格匹配，用前若干字搜索
+            for seg_len in [25, 18, 12, 8]:
+                if seg_len > len(norm_query):
+                    continue
+                snippet = norm_query[:seg_len]
+                quads = page.search_for(snippet, quads=True)
+                if quads:
+                    return self._apply_highlight(page, quads, color)
+
+        # ── 策略 7：逐级截短搜索（前段 + 后段 + 中段）──
+        for length in [80, 60, 40, 25, 15]:
+            if len(norm_text) <= length:
+                continue
+            # 前段
+            quads = page.search_for(norm_text[:length], quads=True)
+            if quads:
+                return self._apply_highlight(page, quads, color)
+            # 后段
+            quads = page.search_for(norm_text[-length:], quads=True)
+            if quads:
+                return self._apply_highlight(page, quads, color)
+            # 中段
+            mid = len(norm_text) // 2
+            mid_start = max(0, mid - length // 2)
+            quads = page.search_for(norm_text[mid_start:mid_start + length], quads=True)
+            if quads:
+                return self._apply_highlight(page, quads, color)
+
+        # ── 策略 8：关键词锚定搜索（提取长词在页面中定位）──
+        keywords = [w for w in jieba.cut(text) if len(w) >= 4]
+        if keywords:
+            # 用最长的关键词尝试定位
+            keywords.sort(key=len, reverse=True)
+            for kw in keywords[:3]:
+                quads = page.search_for(kw, quads=True)
+                if quads:
+                    return self._apply_highlight(page, quads, color)
+
+        # ── 策略 9：滑动窗口搜索（在页面文本中寻找最佳匹配子串）──
+        if len(norm_query) >= 15:
+            best_ratio = 0
+            best_substr = None
+            window_size = min(len(norm_query) + 20, len(norm_page))
+            step = max(1, window_size // 4)
+            for i in range(0, max(1, len(norm_page) - window_size + 1), step):
+                window = norm_page[i:i + window_size]
+                ratio = SequenceMatcher(None, norm_query, window).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_substr = window
+            if best_ratio > 0.7 and best_substr:
+                # 找到高相似度窗口，用前20字在原始PDF中搜索
+                for seg_len in [25, 18, 12]:
+                    snippet = best_substr[:seg_len]
+                    quads = page.search_for(snippet, quads=True)
+                    if quads:
+                        return self._apply_highlight(page, quads, color)
+
+        return False
+
+    def _apply_highlight(self, page, quads, color):
+        """应用高亮标注"""
+        annot = page.add_highlight_annot(quads)
+        annot.set_colors(stroke=color)
+        annot.set_opacity(0.35)
+        annot.update()
+        return True
     
     
     def compare_documents(self, records):
@@ -648,57 +696,89 @@ class TextAnalyzer:
     
     def _locate_text_in_pdf(self, pdf_path, text, page_hint=None):
         """
-        在PDF中精准定位文本位置
-        结合多种方法：
-        1. 如果有页码提示，优先在指定页查找
-        2. 全文搜索匹配
-        3. 模糊匹配
-        返回: (page_num, bbox) 或 None
+        使用 PyMuPDF search_for 在 PDF 中精准定位文本位置
+        增强版：多种文本归一化变体 + 逐级截短降级
+        返回: (page_num, bbox_dict) 或 None
         """
         if not pdf_path or not os.path.exists(pdf_path):
             return None
-        
+
         try:
-            with pdfplumber.open(pdf_path) as pdf:
-                pages_to_search = []
-                
-                # 决定搜索范围
-                if page_hint and 1 <= page_hint <= len(pdf.pages):
-                    # 优先搜索提示页，然后搜索相邻页
-                    pages_to_search.append(page_hint - 1)  # 转为0索引
-                    if page_hint > 1:
-                        pages_to_search.append(page_hint - 2)
-                    if page_hint < len(pdf.pages):
-                        pages_to_search.append(page_hint)
-                else:
-                    # 搜索所有页
-                    pages_to_search = list(range(len(pdf.pages)))
-                
-                # 在每一页中搜索
-                for page_idx in pages_to_search:
-                    page = pdf.pages[page_idx]
-                    page_text = page.extract_text()
-                    
-                    # 精确匹配
-                    if text in page_text:
-                        print(f"✅ 在第 {page_idx + 1} 页找到文本: {text[:30]}...")
-                        # 尝试获取详细位置（bbox）
-                        words = page.extract_words()
-                        for word in words:
-                            if text.startswith(word['text']):
-                                return (page_idx + 1, word)
-                        return (page_idx + 1, None)
-                    
-                    # 模糊匹配（去除空白后匹配）
-                    text_cleaned = ''.join(text.split())
-                    page_cleaned = ''.join(page_text.split())
-                    if text_cleaned in page_cleaned:
-                        print(f"✅ 在第 {page_idx + 1} 页模糊匹配: {text[:30]}...")
-                        return (page_idx + 1, None)
-                
-                print(f"⚠️ 未在PDF中找到文本: {text[:30]}...")
-                return None
-                
+            doc = fitz.open(pdf_path)
+            n_pages = len(doc)
+
+            # 决定搜索范围（优先提示页附近）
+            if page_hint and 1 <= page_hint <= n_pages:
+                search_pages = [page_hint - 1]
+                for offset in [1, -1, 2, -2]:
+                    p = page_hint - 1 + offset
+                    if 0 <= p < n_pages and p not in search_pages:
+                        search_pages.append(p)
+                remaining = [i for i in range(n_pages) if i not in search_pages]
+                search_pages += remaining
+            else:
+                search_pages = list(range(n_pages))
+
+            # 准备多种搜索变体
+            text_clean = text.strip()
+            norm = self._normalize_for_search(text_clean)
+            
+            # 智能引号/破折号替换
+            smart = norm.replace('\u2018', "'").replace('\u2019', "'")
+            smart = smart.replace('\u201c', '"').replace('\u201d', '"')
+            smart = smart.replace('\u2013', '-').replace('\u2014', '-')
+            smart = smart.replace('\u00a0', ' ')
+
+            variants = [text_clean]
+            for v in [norm, smart]:
+                if v not in variants:
+                    variants.append(v)
+
+            for page_idx in search_pages:
+                page = doc[page_idx]
+
+                # 尝试所有变体
+                for variant in variants:
+                    rects = page.search_for(variant)
+                    if rects:
+                        doc.close()
+                        return (page_idx + 1, {
+                            'x0': rects[0].x0, 'y0': rects[0].y0,
+                            'x1': rects[0].x1, 'y1': rects[0].y1
+                        })
+
+                # 归一化子串匹配
+                page_text = page.get_text("text")
+                norm_page = self._normalize_for_search(page_text)
+                if norm in norm_page:
+                    for seg_len in [30, 20, 12]:
+                        if seg_len > len(norm):
+                            continue
+                        rects = page.search_for(norm[:seg_len])
+                        if rects:
+                            doc.close()
+                            return (page_idx + 1, {
+                                'x0': rects[0].x0, 'y0': rects[0].y0,
+                                'x1': rects[0].x1, 'y1': rects[0].y1
+                            })
+
+                # 截短降级
+                for length in [40, 25, 15]:
+                    if len(text_clean) <= length:
+                        continue
+                    for variant in variants:
+                        if len(variant) > length:
+                            rects = page.search_for(variant[:length])
+                            if rects:
+                                doc.close()
+                                return (page_idx + 1, {
+                                    'x0': rects[0].x0, 'y0': rects[0].y0,
+                                    'x1': rects[0].x1, 'y1': rects[0].y1
+                                })
+
+            doc.close()
+            return None
+
         except Exception as e:
-            print(f"⚠️ PDF定位错误: {str(e)}")
+            print(f"PDF定位错误: {str(e)}")
             return None

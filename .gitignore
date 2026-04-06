@@ -23,9 +23,13 @@ instance/
 backend/uploads/*
 backend/exports/*
 backend/annotated/*
+backend/parsed_output/*
+backend/.hf_cache/
+backend/2.70.0
 !backend/uploads/.gitkeep
 !backend/exports/.gitkeep
 !backend/annotated/.gitkeep
+!backend/parsed_output/.gitkeep
 
 # Test files
 backend/test_doc.*

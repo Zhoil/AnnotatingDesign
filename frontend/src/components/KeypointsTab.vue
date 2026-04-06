@@ -16,26 +16,59 @@
           class="keypoint-card"
           :class="getCardClass(kp.importance)"
           :style="{ animationDelay: `${index * 0.08}s` }"
-          @click="$emit('scroll-to', kp.id)"
         >
-          <div class="card-top">
+          <!-- 卡片头部：排名 + 标签 + 分数 -->
+          <div class="card-top" @click="$emit('scroll-to', kp.id)">
             <div class="card-rank" :class="getRankClass(index)">
               <span class="rank-number">{{ index + 1 }}</span>
               <span class="rank-label" v-if="index === 0">最重要</span>
               <span class="rank-label" v-else-if="index < 3">重要</span>
             </div>
+            <div v-if="kp.annotation_label" class="card-label-badge">{{ kp.annotation_label }}</div>
             <div class="card-importance-badge" :style="{ backgroundColor: getImportanceColor(kp.importance) }">
               {{ kp.importance }}分
             </div>
           </div>
           
-          <div class="card-content">
-            <div class="card-summary">
-              <span class="summary-icon">📝</span>
-              <p>{{ kp.summary }}</p>
+          <!-- 论点完整内容 -->
+          <div class="card-content" @click="$emit('scroll-to', kp.id)">
+            <div class="card-point">
+              <span class="point-icon">📌</span>
+              <p class="point-text">{{ kp.content }}</p>
             </div>
           </div>
+
+          <!-- 展开/折叠论据按钮 -->
+          <div 
+            v-if="kp.evidence && kp.evidence.length > 0"
+            class="evidence-toggle"
+            @click.stop="toggleEvidence(kp.id)"
+          >
+            <span class="toggle-icon" :class="{ expanded: expandedIds.has(kp.id) }">▶</span>
+            <span class="toggle-text">{{ expandedIds.has(kp.id) ? '收起论据' : `查看 ${kp.evidence.length} 条支撑论据` }}</span>
+          </div>
+
+          <!-- 论据列表（可展开） -->
+          <Transition name="slide">
+            <div v-if="expandedIds.has(kp.id) && kp.evidence" class="evidence-list">
+              <div 
+                v-for="(ev, evIdx) in kp.evidence" 
+                :key="evIdx"
+                class="evidence-item"
+                @click.stop="$emit('scroll-to', kp.id + evIdx + 1)"
+              >
+                <div class="evidence-marker">
+                  <span class="evidence-index">{{ evIdx + 1 }}</span>
+                </div>
+                <div class="evidence-content">
+                  <p class="evidence-text">{{ ev.text }}</p>
+                  <span v-if="ev.page" class="evidence-page">📄 第{{ ev.page }}页</span>
+                </div>
+              </div>
+            </div>
+          </Transition>
           
+          <!-- 重要性进度条 -->
           <div class="card-footer">
             <div class="importance-bar-container">
               <div class="importance-bar-label">重要性</div>
@@ -59,16 +92,27 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, reactive } from 'vue'
 import { useDocumentStore } from '../stores/document'
 
 const emit = defineEmits(['scroll-to'])
 const documentStore = useDocumentStore()
 
+// 展开状态管理
+const expandedIds = reactive(new Set())
+
+const toggleEvidence = (id) => {
+  if (expandedIds.has(id)) {
+    expandedIds.delete(id)
+  } else {
+    expandedIds.add(id)
+  }
+}
+
 const keypoints = computed(() => {
   const doc = documentStore.getCurrentDocument
   if (!doc || !doc.keypoints) return []
-  // 仅显示核心论点
+  // 仅显示核心论点（论据通过展开查看）
   return doc.keypoints.filter(kp => kp.category === '核心论点')
 })
 
@@ -99,14 +143,8 @@ const getRankClass = (index) => {
 }
 
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .keypoints-header {
@@ -154,7 +192,6 @@ const getRankClass = (index) => {
   background: white;
   border-radius: 16px;
   padding: 20px;
-  cursor: pointer;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border: 2px solid #f1f3f5;
   animation: slideInRight 0.5s ease;
@@ -179,48 +216,28 @@ const getRankClass = (index) => {
   transform: scaleY(1);
 }
 
-.card-critical {
-  border-left: 4px solid #ff6b6b;
-  background: linear-gradient(135deg, #fff5f5 0%, #ffffff 100%);
-}
-
-.card-high {
-  border-left: 4px solid #ffa94d;
-  background: linear-gradient(135deg, #fff9f0 0%, #ffffff 100%);
-}
-
-.card-medium {
-  border-left: 4px solid #ffd43b;
-  background: linear-gradient(135deg, #fffbf0 0%, #ffffff 100%);
-}
-
-.card-normal {
-  border-left: 4px solid #74c0fc;
-  background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%);
-}
+.card-critical { border-left: 4px solid #ff6b6b; background: linear-gradient(135deg, #fff5f5 0%, #ffffff 100%); }
+.card-high { border-left: 4px solid #ffa94d; background: linear-gradient(135deg, #fff9f0 0%, #ffffff 100%); }
+.card-medium { border-left: 4px solid #ffd43b; background: linear-gradient(135deg, #fffbf0 0%, #ffffff 100%); }
+.card-normal { border-left: 4px solid #74c0fc; background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%); }
 
 @keyframes slideInRight {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 .keypoint-card:hover {
-  transform: translateY(-6px) scale(1.01);
+  transform: translateY(-4px);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.12);
   border-color: #667eea;
 }
 
 .card-top {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 10px;
   margin-bottom: 16px;
+  cursor: pointer;
 }
 
 .card-rank {
@@ -250,19 +267,20 @@ const getRankClass = (index) => {
   color: white;
 }
 
-.rank-number {
-  font-size: 18px;
-  font-weight: 800;
-}
+.rank-number { font-size: 18px; font-weight: 800; }
+.rank-label { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; font-weight: 600; }
 
-.rank-label {
-  font-size: 11px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
+.card-label-badge {
+  padding: 4px 10px;
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  color: #2e7d32;
+  border-radius: 12px;
+  font-size: 12px;
   font-weight: 600;
 }
 
 .card-importance-badge {
+  margin-left: auto;
   padding: 6px 14px;
   border-radius: 20px;
   color: white;
@@ -273,45 +291,144 @@ const getRankClass = (index) => {
 }
 
 .card-content {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+  cursor: pointer;
 }
 
-.card-header {
-  display: none;
-}
-
-.card-index {
-  display: none;
-}
-
-.card-category {
-  display: none;
-}
-
-.card-category-point {
-  display: none;
-}
-
-.card-summary {
+.card-point {
   display: flex;
   gap: 12px;
   align-items: flex-start;
 }
 
-.summary-icon {
-  font-size: 20px;
+.point-icon {
+  font-size: 18px;
   flex-shrink: 0;
   margin-top: 2px;
 }
 
-.card-summary p {
+.point-text {
   font-size: 15px;
-  line-height: 1.7;
+  line-height: 1.8;
   color: #2c3e50;
   margin: 0;
   font-weight: 500;
+  word-break: break-word;
 }
 
+/* ── 论据展开/折叠 ── */
+.evidence-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  background: #f8f9fa;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.evidence-toggle:hover {
+  background: #e9ecef;
+}
+
+.toggle-icon {
+  font-size: 12px;
+  color: #667eea;
+  transition: transform 0.3s ease;
+  display: inline-block;
+}
+
+.toggle-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.toggle-text {
+  font-size: 13px;
+  color: #667eea;
+  font-weight: 600;
+}
+
+.evidence-list {
+  margin: 8px 0 12px;
+  padding-left: 8px;
+  border-left: 3px solid #51cf66;
+}
+
+.evidence-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  margin: 6px 0;
+  background: linear-gradient(135deg, #f0fff4 0%, #ffffff 100%);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.evidence-item:hover {
+  background: linear-gradient(135deg, #e6ffe8 0%, #f0fff4 100%);
+  transform: translateX(4px);
+}
+
+.evidence-marker {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, #51cf66 0%, #40c057 100%);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.evidence-index {
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.evidence-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.evidence-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #495057;
+  margin: 0;
+  word-break: break-word;
+}
+
+.evidence-page {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #868e96;
+  background: #f1f3f5;
+  padding: 2px 8px;
+  border-radius: 8px;
+}
+
+/* ── 展开动画 ── */
+.slide-enter-active {
+  transition: all 0.3s ease;
+  max-height: 2000px;
+}
+.slide-leave-active {
+  transition: all 0.2s ease;
+}
+.slide-enter-from,
+.slide-leave-to {
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+}
+
+/* ── 底部进度条 ── */
 .card-footer {
   display: flex;
   align-items: center;
@@ -365,14 +482,6 @@ const getRankClass = (index) => {
 .list-leave-active {
   transition: all 0.5s ease;
 }
-
-.list-enter-from {
-  opacity: 0;
-  transform: translateX(30px);
-}
-
-.list-leave-to {
-  opacity: 0;
-  transform: translateX(-30px);
-}
+.list-enter-from { opacity: 0; transform: translateX(30px); }
+.list-leave-to { opacity: 0; transform: translateX(-30px); }
 </style>

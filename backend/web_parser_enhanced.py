@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import re
+from urllib.parse import urljoin, urlparse
 
 class EnhancedWebParser:
     """
@@ -22,7 +23,7 @@ class EnhancedWebParser:
         解析网页URL，提取结构化内容
         返回: {
             'text': str,  # 纯文本（用于大模型分析）
-            'html': str,  # 原始完整HTML（保留所有样式）
+            'html': str,  # 完整HTML（保留所有样式，相对URL已转绝对）
             'structured_content': list,  # 结构化内容
             'metadata': dict
         }
@@ -37,6 +38,7 @@ class EnhancedWebParser:
             
             # 保存原始完整HTML
             self.original_html = response.text
+            self.source_url = url
             self.soup = BeautifulSoup(self.original_html, 'html.parser')
             
             # 提取元数据
@@ -44,6 +46,11 @@ class EnhancedWebParser:
             
             # 只移除脚本，保留所有样式和HTML结构
             self._remove_noise()
+
+            # 注入 <base> 标签，将相对 URL 转为绝对（确保 CSS/图片/字体能加载）
+            self._inject_base_tag(url)
+            # 将关键资源的相对 URL 转为绝对URL（备用策略）
+            self._absolutify_urls(url)
             
             # 识别主要内容区域（用于提取文本）
             main_content = self._find_main_content()
@@ -93,6 +100,63 @@ class EnhancedWebParser:
         # 只移除脚本，保留所有CSS样式
         for element in self.soup(['script']):
             element.decompose()
+
+    def _inject_base_tag(self, url):
+        """注入 <base href> 标签，让所有相对URL能正确解析"""
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        # 如果已有 base 标签，不重复添加
+        existing_base = self.soup.find('base')
+        if existing_base:
+            return
+        base_tag = self.soup.new_tag('base', href=base_url)
+        if self.soup.head:
+            self.soup.head.insert(0, base_tag)
+        else:
+            head = self.soup.new_tag('head')
+            head.append(base_tag)
+            if self.soup.html:
+                self.soup.html.insert(0, head)
+
+    def _absolutify_urls(self, page_url):
+        """
+        将 HTML 中关键资源的相对 URL 转为绝对 URL。
+        处理: img[src], link[href](CSS), a[href], source[src], video[src/poster]
+        """
+        tag_attr_map = [
+            ('img', 'src'),
+            ('img', 'data-src'),  # 懒加载图片
+            ('link', 'href'),
+            ('source', 'src'),
+            ('video', 'src'),
+            ('video', 'poster'),
+        ]
+        for tag_name, attr in tag_attr_map:
+            for el in self.soup.find_all(tag_name):
+                val = el.get(attr)
+                if val and not val.startswith(('http://', 'https://', 'data:', '//', '#', 'javascript:')):
+                    el[attr] = urljoin(page_url, val)
+
+        # 处理 CSS 中的 url() 引用（内联 style 属性）
+        for el in self.soup.find_all(style=True):
+            style = el['style']
+            if 'url(' in style:
+                def replace_url(m):
+                    raw = m.group(1).strip('\"\'')
+                    if raw.startswith(('http://', 'https://', 'data:')):
+                        return m.group(0)
+                    return f"url('{urljoin(page_url, raw)}')"
+                el['style'] = re.sub(r'url\(([^)]+)\)', replace_url, style)
+
+        # 处理 <style> 块中的 url() 引用
+        for style_tag in self.soup.find_all('style'):
+            if style_tag.string and 'url(' in style_tag.string:
+                def replace_url(m):
+                    raw = m.group(1).strip('\"\'')
+                    if raw.startswith(('http://', 'https://', 'data:')):
+                        return m.group(0)
+                    return f"url('{urljoin(page_url, raw)}')"
+                style_tag.string = re.sub(r'url\(([^)]+)\)', replace_url, style_tag.string)
     
     def _find_main_content(self):
         """识别主要内容区域"""
