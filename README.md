@@ -8,7 +8,7 @@
     <a href="frontend/package.json"><img src="https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue 3" /></a>
     <a href="frontend/package.json"><img src="https://img.shields.io/badge/Node.js-16%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js" /></a>
     <a href="https://platform.deepseek.com/"><img src="https://img.shields.io/badge/DeepSeek--R1-LLM-6C47FF?logo=openai&logoColor=white" alt="DeepSeek-R1" /></a>
-    <img src="https://img.shields.io/badge/Version-v3.0.0-orange.svg" alt="Version" />
+    <img src="https://img.shields.io/badge/Version-v3.1.1-orange.svg" alt="Version" />
     <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License" />
   </p>
   <p><strong>基于 Vue 3 + Flask + Docling 结构化解析 + 多模型 LLM 引擎的 AI 文档深度分析与物理标注系统</strong></p>
