@@ -364,3 +364,7 @@ GraDesign_one/
 ## License
 
 MIT
+
+---
+
+<p align="center">© 2026 AnnoPaper. All rights reserved.</p>
