@@ -57,20 +57,160 @@
           <div v-else class="empty-state">暂无结论总结</div>
         </div>
       </div>
+
+      <!-- 相关文献推荐 -->
+      <div class="summary-section recommend-section">
+        <div class="section-header recommend-header">
+          <span class="section-icon">📚</span>
+          <h4 class="section-subtitle">相关文献推荐</h4>
+          <button
+            class="recommend-btn"
+            :disabled="!recordId || recommendLoading || cooldownActive"
+            @click="loadRecommendations(false)"
+          >
+            <span v-if="recommendLoading">加载中…</span>
+            <span v-else-if="cooldownActive">冷却中 {{ cooldownSeconds }}s</span>
+            <span v-else-if="recommendations.results.length">🔄 查看推荐</span>
+            <span v-else>🔍 获取推荐</span>
+          </button>
+          <button
+            v-if="recommendations.results.length && !cooldownActive"
+            class="recommend-btn recommend-btn-ghost"
+            :disabled="recommendLoading || cooldownActive"
+            @click="loadRecommendations(true)"
+            title="忽略缓存重新调用大模型生成"
+          >
+            强制刷新
+          </button>
+        </div>
+        <div class="section-content">
+          <div v-if="recommendations.query" class="recommend-query">
+            检索关键词：<span>{{ recommendations.query }}</span>
+            <span v-if="sourcesText" class="recommend-sources">· {{ sourcesText }}</span>
+            <span v-if="cacheBadge" class="recommend-cache-badge" :class="cacheBadgeClass">{{ cacheBadge }}</span>
+          </div>
+          <div v-if="recommendations.warning" class="recommend-warning">⚠️ {{ recommendations.warning }}</div>
+           <div v-if="recommendations.results.length" class="recommend-scroll">
+            <div
+              class="recommend-track"
+              :style="trackStyle"
+              @mouseenter="pauseScroll = true"
+              @mouseleave="pauseScroll = false"
+            >
+              <a
+                v-for="(item, idx) in doubledResults"
+                :key="idx + '-' + (item.external_id || item.title)"
+                :href="item.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="recommend-card"
+              >
+                <div class="recommend-card-top">
+                  <span class="recommend-source-tag" :class="`source-${item.source}`">
+                    {{ sourceLabel(item.source) }}
+                  </span>
+                  <span v-if="item.year" class="recommend-year">{{ item.year }}</span>
+                </div>
+                <div class="recommend-title">{{ item.title }}</div>
+                <div v-if="item.authors" class="recommend-authors">{{ item.authors }}</div>
+                <div v-if="item.venue" class="recommend-venue">{{ item.venue }}</div>
+                <div v-if="item.reason" class="recommend-reason">💡 {{ item.reason }}</div>
+                <div class="recommend-summary">{{ item.summary }}</div>
+                <div class="recommend-link-hint">点击跳转 ↗</div>
+              </a>
+            </div>
+          </div>
+          <div v-else-if="recommendLoading" class="empty-state">正在调用大模型检索并验证文献…</div>
+          <div v-else-if="!recordId" class="empty-state">请先加载或上传一篇文档</div>
+          <div v-else class="empty-state">点击上方“获取推荐”获取相关文献</div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useDocumentStore } from '../stores/document'
 
 const documentStore = useDocumentStore()
+const { recommendations, recommendLoading } = storeToRefs(documentStore)
 
 const summary = computed(() => {
   const doc = documentStore.getCurrentDocument
   return doc?.summary || {}
 })
+
+const recordId = computed(() => {
+  const doc = documentStore.getCurrentDocument
+  return doc?.record_id || doc?.id || null
+})
+
+// sources 新结构：llm_total / arxiv_verified / doi_verified / dropped。
+// 同时兼容旧结构 arxiv / semantic_scholar。
+const sourcesText = computed(() => {
+  const s = recommendations.value.sources || {}
+  const parts = []
+  if (typeof s.llm_total === 'number') parts.push(`LLM 候选 ${s.llm_total}`)
+  if (typeof s.arxiv_verified === 'number' && s.arxiv_verified) parts.push(`arXiv 验证 ${s.arxiv_verified}`)
+  if (typeof s.doi_verified === 'number' && s.doi_verified) parts.push(`DOI 验证 ${s.doi_verified}`)
+  if (typeof s.dropped === 'number' && s.dropped) parts.push(`丢弃 ${s.dropped}`)
+  if (!parts.length) {
+    if (s.arxiv) parts.push(`arXiv ${s.arxiv}`)
+    if (s.semantic_scholar) parts.push(`Semantic Scholar ${s.semantic_scholar}`)
+  }
+  return parts.join(' / ')
+})
+
+const cacheBadge = computed(() => {
+  if (!recommendations.value.fromCache) return ''
+  if (recommendations.value.cacheReason === 'click_throttle') return '冷却期直读缓存'
+  if (recommendations.value.cacheReason === 'ttl_hit') return '缓存命中（2天内）'
+  return '缓存'
+})
+
+const cacheBadgeClass = computed(() => {
+  return recommendations.value.cacheReason === 'click_throttle' ? 'cache-throttle' : 'cache-hit'
+})
+
+// 客户端冷却倒计时，跟着后端 cooldown_remaining 滑动
+const cooldownSeconds = ref(0)
+let cooldownTimer = null
+
+function startCooldown(sec) {
+  if (cooldownTimer) clearInterval(cooldownTimer)
+  cooldownSeconds.value = sec
+  cooldownTimer = setInterval(() => {
+    cooldownSeconds.value -= 1
+    if (cooldownSeconds.value <= 0) {
+      clearInterval(cooldownTimer)
+      cooldownTimer = null
+      cooldownSeconds.value = 0
+    }
+  }, 1000)
+}
+
+const cooldownActive = computed(() => cooldownSeconds.value > 0)
+
+onUnmounted(() => {
+  if (cooldownTimer) clearInterval(cooldownTimer)
+})
+
+function sourceLabel(src) {
+  if (src === 'arxiv') return 'arXiv'
+  if (src === 'semantic_scholar') return 'S2'
+  return src || 'paper'
+}
+
+async function loadRecommendations(force = false) {
+  if (!recordId.value || cooldownActive.value) return
+  await documentStore.fetchRecommendations(recordId.value, 8, { force })
+  // 读后端返回的 cooldown_remaining 启动本地倒计时
+  const remaining = recommendations.value.cooldownRemaining || 0
+  if (remaining > 0) startCooldown(remaining)
+  else startCooldown(10)  // 成功调用也触发 10s 前端冷却
+}
 
 const corePoints = computed(() => summary.value.core_points || [])
 
@@ -105,6 +245,25 @@ function cleanNumericStr(str) {
 const conclusions = computed(() => {
   const raw = summary.value.conclusions || []
   return raw.filter(c => c && c.trim())
+})
+
+// ── 垂直自动循环滚动 ──
+// DOM 中把 results 复制一份，配合 translateY(-50%) 形成 seamless loop
+const doubledResults = computed(() => {
+  const arr = recommendations.value.results || []
+  return arr.length ? [...arr, ...arr] : []
+})
+
+const pauseScroll = ref(false)
+
+// 根据条目数量动态调整速度：每条约 4s
+const trackStyle = computed(() => {
+  const n = (recommendations.value.results || []).length
+  const duration = Math.max(18, n * 4)  // 至少 18s，保证视觉舒适
+  return {
+    animationDuration: `${duration}s`,
+    animationPlayState: pauseScroll.value ? 'paused' : 'running'
+  }
 })
 </script>
 
@@ -258,5 +417,240 @@ const conclusions = computed(() => {
   font-style: italic;
   text-align: center;
   padding: 20px;
+}
+
+/* ── 相关文献推荐 ── */
+.recommend-section {
+  border-left: 4px solid #b07f5b;
+  background: linear-gradient(135deg, #fbf6ee 0%, #ffffff 100%);
+}
+
+.recommend-header {
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.recommend-btn {
+  margin-left: auto;
+  padding: 6px 14px;
+  background: linear-gradient(135deg, #b07f5b 0%, #8b6240 100%);
+  color: white;
+  border: none;
+  border-radius: 18px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(176, 127, 91, 0.3);
+  transition: all 0.2s ease;
+}
+
+.recommend-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(176, 127, 91, 0.4);
+}
+
+.recommend-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.recommend-query {
+  font-size: 12px;
+  color: #8a7e72;
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  background: rgba(176, 127, 91, 0.06);
+  border-radius: 8px;
+}
+
+.recommend-query span {
+  color: #b07f5b;
+  font-weight: 600;
+}
+
+.recommend-sources {
+  margin-left: 6px;
+  color: #8a7e72 !important;
+  font-weight: 500 !important;
+}
+
+.recommend-cache-badge {
+  margin-left: 10px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.recommend-cache-badge.cache-hit {
+  background: rgba(88, 168, 120, 0.15);
+  color: #3f8857;
+  border: 1px solid rgba(88, 168, 120, 0.35);
+}
+
+.recommend-cache-badge.cache-throttle {
+  background: rgba(216, 162, 58, 0.15);
+  color: #a87820;
+  border: 1px solid rgba(216, 162, 58, 0.35);
+}
+
+.recommend-warning {
+  font-size: 12px;
+  color: #a85b2b;
+  background: rgba(216, 108, 58, 0.08);
+  padding: 6px 10px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+
+.recommend-btn-ghost {
+  margin-left: 8px !important;
+  background: #ffffff !important;
+  color: #b07f5b !important;
+  border: 1px solid #b07f5b !important;
+  box-shadow: none !important;
+}
+
+.recommend-btn-ghost:hover:not(:disabled) {
+  background: rgba(176, 127, 91, 0.08) !important;
+}
+
+.recommend-reason {
+  font-size: 11px;
+  color: #6a7a6f;
+  background: rgba(88, 168, 120, 0.08);
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── 垂直自动循环滚动容器 ── */
+.recommend-scroll {
+  position: relative;
+  height: 420px;
+  overflow: hidden;
+  padding: 8px 4px;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+}
+
+.recommend-track {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation-name: recommendScrollUp;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform;
+}
+
+@keyframes recommendScrollUp {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-50%); }
+}
+
+.recommend-card {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid #e8dcc8;
+  border-radius: 12px;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+  box-shadow: 0 2px 6px rgba(192, 144, 96, 0.05);
+}
+
+.recommend-card:hover {
+  box-shadow: 0 10px 24px rgba(176, 127, 91, 0.18);
+  border-color: #b07f5b;
+}
+
+.recommend-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.recommend-source-tag {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.source-arxiv {
+  background: linear-gradient(135deg, #b31b1b 0%, #d63b3b 100%);
+  color: white;
+}
+
+.source-semantic_scholar {
+  background: linear-gradient(135deg, #1857b6 0%, #3a78d8 100%);
+  color: white;
+}
+
+.recommend-year {
+  font-size: 11px;
+  color: #8a7e72;
+  font-weight: 600;
+}
+
+.recommend-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #3a3630;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.recommend-authors {
+  font-size: 11px;
+  color: #8a7e72;
+  font-style: italic;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.recommend-venue {
+  font-size: 11px;
+  color: #b07f5b;
+  font-weight: 600;
+}
+
+.recommend-summary {
+  font-size: 12px;
+  color: #495057;
+  line-height: 1.55;
+  flex: 1;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.recommend-link-hint {
+  font-size: 11px;
+  color: #b07f5b;
+  font-weight: 600;
+  margin-top: 4px;
+  text-align: right;
 }
 </style>

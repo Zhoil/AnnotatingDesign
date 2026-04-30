@@ -287,7 +287,7 @@ function cleanValue(str) {
 .subsection-title {
   font-size: 16px;
   font-weight: 600;
-  color: #e2e8f0;
+  color: #3a3630;
   margin-bottom: 16px;
 }
 
@@ -320,12 +320,12 @@ function cleanValue(str) {
 }
 
 .category-name {
-  color: #e2e8f0;
-  font-weight: 500;
+  color: #3a3630;
+  font-weight: 600;
 }
 
 .category-count {
-  color: #3a9fd8;
+  color: #1c7fb8;
   font-weight: 700;
 }
 
@@ -352,9 +352,9 @@ function cleanValue(str) {
   display: inline-block;
   padding: 8px 16px;
   background: linear-gradient(135deg, #f5f1ea 0%, #f5f0e8 100%);
-  color: #495057;
+  color: #3a3630;
   border-radius: 20px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
   animation: popIn 0.5s ease;
@@ -414,7 +414,7 @@ function cleanValue(str) {
 .kd-bar-value {
   font-size: 11px;
   font-weight: 700;
-  color: #3a9fd8;
+  color: #1c7fb8;
   white-space: nowrap;
   text-align: center;
 }
@@ -444,7 +444,8 @@ function cleanValue(str) {
 
 .kd-bar-label {
   font-size: 10px;
-  color: #8a7e72;
+  color: #3a3630;
+  font-weight: 600;
   text-align: center;
   max-width: 60px;
   overflow: hidden;

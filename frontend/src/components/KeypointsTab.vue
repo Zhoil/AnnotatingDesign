@@ -5,10 +5,104 @@
       <div class="keypoints-stats">
         <span class="stat-badge">共 {{ keypoints.length }} 个</span>
         <span class="stat-badge">按重要性排序</span>
+        <button
+          class="logic-toggle-btn"
+          :class="{ active: showLogic }"
+          :disabled="!recordId"
+          @click="toggleLogicView"
+        >
+          <span v-if="showLogic">📋 列表视图</span>
+          <span v-else>🔗 论证链路</span>
+        </button>
       </div>
     </div>
-    
-    <div class="keypoints-list">
+
+    <!-- 论证链路面板（SVG 关系图：根 → 论点 → 论据连线） -->
+    <div v-if="showLogic" class="logic-panel">
+      <div class="logic-toolbar">
+        <div class="logic-stats" v-if="logicTree && logicTree.stats">
+          论点 {{ logicTree.stats.points }} 个 · 论据 {{ logicTree.stats.evidences }} 条
+        </div>
+        <div class="logic-hint">💡 悬停节点高亮关联链路 · 点击跳转原文</div>
+        <button class="logic-btn" :disabled="logicLoading" @click="refreshLogic">
+          <span v-if="logicLoading">生成中…</span>
+          <span v-else>🔄 重生成</span>
+        </button>
+        <button class="logic-btn primary" :disabled="!treePoints.length" @click="openFullscreen">
+          🔍 全屏查看
+        </button>
+      </div>
+      <div v-if="logicLoading" class="logic-empty">正在构建论证链路…</div>
+      <div v-else-if="!treePoints.length" class="logic-empty">未生成论证链路，点击上方“重生成”</div>
+      <div v-else class="logic-graph" ref="graphWrap">
+        <svg class="logic-graph-svg" :width="svgW" :height="svgH">
+          <path
+            v-for="(link, idx) in links"
+            :key="'l-' + idx"
+            :d="link.d"
+            :stroke="link.color"
+            :stroke-width="link.kind === 'root' ? 2.4 : 1.6"
+            class="logic-link"
+            :class="{ 'link-active': hoverPointId === link.pointId, 'link-dim': hoverPointId && hoverPointId !== link.pointId }"
+            fill="none"
+          />
+        </svg>
+        <div class="logic-graph-grid">
+          <div class="col col-root">
+            <div class="node node-root">
+              <span class="node-root-icon">📄</span>
+              <span class="node-root-text">{{ logicTree?.tree?.root || '文档' }}</span>
+            </div>
+          </div>
+          <div class="col col-points">
+            <div
+              v-for="(p, i) in treePoints"
+              :key="'p-' + (p.id || i)"
+              class="node node-point"
+              :class="[getImportanceClass(p.importance), { 'node-active': hoverPointId === p.id, 'node-dim': hoverPointId && hoverPointId !== p.id }]"
+              :data-pid="String(p.id)"
+              :data-importance="p.importance || 0"
+              @mouseenter="hoverPointId = p.id"
+              @mouseleave="hoverPointId = null"
+              @click="$emit('scroll-to', p.id)"
+            >
+              <div class="node-head">
+                <span class="node-badge">#{{ i + 1 }}</span>
+                <span v-if="p.label" class="node-label">{{ p.label }}</span>
+                <span class="node-score" :style="{ backgroundColor: getImportanceColor(p.importance) }">
+                  {{ p.importance || 0 }}
+                </span>
+              </div>
+              <div class="node-text">{{ p.text }}</div>
+              <div class="node-meta">
+                <span v-if="p.page">📍 第 {{ p.page }} 页</span>
+                <span>🔹 {{ (p.evidences || []).length }} 条论据</span>
+              </div>
+            </div>
+          </div>
+          <div class="col col-evidences">
+            <template v-for="(p, i) in treePoints" :key="'eg-' + (p.id || i)">
+              <div
+                v-for="(ev, j) in (p.evidences || [])"
+                :key="'ev-' + (p.id || i) + '-' + j"
+                class="node node-evidence"
+                :class="{ 'node-active': hoverPointId === p.id, 'node-dim': hoverPointId && hoverPointId !== p.id }"
+                :data-pid="String(p.id)"
+                @mouseenter="hoverPointId = p.id"
+                @mouseleave="hoverPointId = null"
+                @click="$emit('scroll-to', ev.id || p.id)"
+              >
+                <span class="ev-arrow">↳</span>
+                <span class="ev-text">{{ ev.text }}</span>
+                <span v-if="ev.page" class="ev-page">p.{{ ev.page }}</span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-show="!showLogic" class="keypoints-list">
       <TransitionGroup name="list">
         <div 
           v-for="(kp, index) in keypoints" 
@@ -88,18 +182,126 @@
         </div>
       </TransitionGroup>
     </div>
+
+    <!-- 全屏 Modal（SVG 关系图） -->
+    <Teleport to="body">
+      <Transition name="modal-fade">
+        <div v-if="fullscreen" class="logic-modal" @click.self="closeFullscreen">
+          <div class="logic-modal-content">
+            <div class="logic-modal-header">
+              <span class="logic-modal-title">🔗 论证链路 · 全屏查看</span>
+              <div class="logic-modal-actions">
+                <span v-if="logicTree && logicTree.stats" class="logic-stats">
+                  论点 {{ logicTree.stats.points }} · 论据 {{ logicTree.stats.evidences }}
+                </span>
+                <span class="logic-hint">💡 悬停高亮 · 点击跳转</span>
+                <button class="logic-btn close" @click="closeFullscreen">✕ 关闭</button>
+              </div>
+            </div>
+            <div class="logic-modal-body">
+              <div class="logic-graph logic-graph-full" ref="fullGraphWrap">
+                <svg class="logic-graph-svg" :width="fullSvgW" :height="fullSvgH">
+                  <path
+                    v-for="(link, idx) in fullLinks"
+                    :key="'fl-' + idx"
+                    :d="link.d"
+                    :stroke="link.color"
+                    :stroke-width="link.kind === 'root' ? 2.8 : 1.8"
+                    class="logic-link"
+                    :class="{ 'link-active': fullHoverPointId === link.pointId, 'link-dim': fullHoverPointId && fullHoverPointId !== link.pointId }"
+                    fill="none"
+                  />
+                </svg>
+                <div class="logic-graph-grid logic-graph-grid-full">
+                  <div class="col col-root">
+                    <div class="node node-root node-root-full">
+                      <span class="node-root-icon">📄</span>
+                      <span class="node-root-text">{{ logicTree?.tree?.root || '文档' }}</span>
+                    </div>
+                  </div>
+                  <div class="col col-points">
+                    <div
+                      v-for="(p, i) in treePoints"
+                      :key="'fp-' + (p.id || i)"
+                      class="node node-point"
+                      :class="[getImportanceClass(p.importance), { 'node-active': fullHoverPointId === p.id, 'node-dim': fullHoverPointId && fullHoverPointId !== p.id }]"
+                      :data-pid="String(p.id)"
+                      :data-importance="p.importance || 0"
+                      @mouseenter="fullHoverPointId = p.id"
+                      @mouseleave="fullHoverPointId = null"
+                    >
+                      <div class="node-head">
+                        <span class="node-badge">#{{ i + 1 }}</span>
+                        <span v-if="p.label" class="node-label">{{ p.label }}</span>
+                        <span class="node-score" :style="{ backgroundColor: getImportanceColor(p.importance) }">
+                          {{ p.importance || 0 }}
+                        </span>
+                      </div>
+                      <div class="node-text">{{ p.text }}</div>
+                      <div class="node-meta">
+                        <span v-if="p.page">📍 第 {{ p.page }} 页</span>
+                        <span>🔹 {{ (p.evidences || []).length }} 条论据</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="col col-evidences">
+                    <template v-for="(p, i) in treePoints" :key="'feg-' + (p.id || i)">
+                      <div
+                        v-for="(ev, j) in (p.evidences || [])"
+                        :key="'fev-' + (p.id || i) + '-' + j"
+                        class="node node-evidence"
+                        :class="{ 'node-active': fullHoverPointId === p.id, 'node-dim': fullHoverPointId && fullHoverPointId !== p.id }"
+                        :data-pid="String(p.id)"
+                        @mouseenter="fullHoverPointId = p.id"
+                        @mouseleave="fullHoverPointId = null"
+                      >
+                        <span class="ev-arrow">↳</span>
+                        <span class="ev-text">{{ ev.text }}</span>
+                        <span v-if="ev.page" class="ev-page">p.{{ ev.page }}</span>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { computed, reactive } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useDocumentStore } from '../stores/document'
 
 const emit = defineEmits(['scroll-to'])
 const documentStore = useDocumentStore()
+const { logicTree, logicLoading } = storeToRefs(documentStore)
 
 // 展开状态管理
 const expandedIds = reactive(new Set())
+
+// 论证链路状态
+const showLogic = ref(false)
+const fullscreen = ref(false)
+
+// ── SVG 关系图相关 ref ──
+const graphWrap = ref(null)
+const fullGraphWrap = ref(null)
+const svgW = ref(0)
+const svgH = ref(0)
+const fullSvgW = ref(0)
+const fullSvgH = ref(0)
+const links = ref([])
+const fullLinks = ref([])
+const hoverPointId = ref(null)
+const fullHoverPointId = ref(null)
+let ro = null
+let roFull = null
+let rafId = null
+let rafIdFull = null
 
 const toggleEvidence = (id) => {
   if (expandedIds.has(id)) {
@@ -112,8 +314,31 @@ const toggleEvidence = (id) => {
 const keypoints = computed(() => {
   const doc = documentStore.getCurrentDocument
   if (!doc || !doc.keypoints) return []
-  // 仅显示核心论点（论据通过展开查看）
   return doc.keypoints.filter(kp => kp.category === '核心论点')
+})
+
+const recordId = computed(() => {
+  const doc = documentStore.getCurrentDocument
+  return doc?.record_id || doc?.id || null
+})
+
+// 论证链路数据：优先使用 logicTree.tree.points，回退到 keypoints 合成
+const treePoints = computed(() => {
+  const pts = logicTree.value?.tree?.points
+  if (Array.isArray(pts) && pts.length) return pts
+  // fallback：从Keypoints构造
+  return keypoints.value.map((kp, idx) => ({
+    id: kp.id,
+    text: kp.content,
+    label: kp.annotation_label,
+    importance: kp.importance,
+    page: kp.page,
+    evidences: (kp.evidence || []).map((ev, j) => ({
+      id: kp.id + j + 1,
+      text: ev.text,
+      page: ev.page
+    }))
+  }))
 })
 
 const getImportanceColor = (importance) => {
@@ -121,6 +346,13 @@ const getImportanceColor = (importance) => {
   if (importance >= 60) return '#ffa94d'
   if (importance >= 40) return '#ffd43b'
   return '#74c0fc'
+}
+
+const getImportanceClass = (importance) => {
+  if (importance >= 90) return 'importance-critical'
+  if (importance >= 75) return 'importance-high'
+  if (importance >= 60) return 'importance-medium'
+  return 'importance-normal'
 }
 
 const getCardClass = (importance) => {
@@ -135,6 +367,141 @@ const getRankClass = (index) => {
   if (index < 3) return 'rank-top'
   return 'rank-normal'
 }
+
+// ── 论证链路加载 ──
+async function loadLogic() {
+  if (!recordId.value) return
+  await documentStore.fetchLogicTree(recordId.value)
+}
+
+async function refreshLogic() { await loadLogic() }
+
+async function toggleLogicView() {
+  showLogic.value = !showLogic.value
+  if (showLogic.value && !logicTree.value) {
+    await loadLogic()
+  }
+}
+
+function openFullscreen() {
+  if (!logicTree.value && !treePoints.value.length) return
+  fullscreen.value = true
+}
+
+function closeFullscreen() { fullscreen.value = false }
+
+// 切换文档时重置论证链路
+watch(recordId, () => {
+  showLogic.value = false
+  fullscreen.value = false
+  documentStore.clearAuxiliary && documentStore.clearAuxiliary()
+})
+
+// ── SVG 连线计算 ──
+function makePath(a, b) {
+  const dx = Math.max(40, (b.x - a.x) / 2)
+  return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`
+}
+
+function cssEscape(s) {
+  if (typeof window !== 'undefined' && window.CSS && typeof window.CSS.escape === 'function') {
+    return window.CSS.escape(s)
+  }
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c)
+}
+
+function computeLinksFor(container, linksRef, svgWRef, svgHRef) {
+  if (!container) return
+  const cRect = container.getBoundingClientRect()
+  const scrollLeft = container.scrollLeft || 0
+  const scrollTop = container.scrollTop || 0
+  svgWRef.value = container.scrollWidth || cRect.width
+  svgHRef.value = container.scrollHeight || cRect.height
+  const rootEl = container.querySelector('.col-root .node-root')
+  if (!rootEl) { linksRef.value = []; return }
+  const anchor = (el, side) => {
+    const r = el.getBoundingClientRect()
+    const x = (side === 'right' ? r.right : r.left) - cRect.left + scrollLeft
+    const y = r.top + r.height / 2 - cRect.top + scrollTop
+    return { x, y }
+  }
+  const rootA = anchor(rootEl, 'right')
+  const newLinks = []
+  const pointNodes = container.querySelectorAll('.col-points .node-point')
+  pointNodes.forEach((pNode) => {
+    const pid = pNode.getAttribute('data-pid')
+    const importance = Number(pNode.getAttribute('data-importance') || 0)
+    const color = getImportanceColor(importance)
+    const leftA = anchor(pNode, 'left')
+    const rightA = anchor(pNode, 'right')
+    newLinks.push({ d: makePath(rootA, leftA), color, pointId: pid, kind: 'root' })
+    const sel = `.col-evidences .node-evidence[data-pid="${cssEscape(pid)}"]`
+    container.querySelectorAll(sel).forEach((evEl) => {
+      const evA = anchor(evEl, 'left')
+      newLinks.push({ d: makePath(rightA, evA), color, pointId: pid, kind: 'ev' })
+    })
+  })
+  linksRef.value = newLinks
+}
+
+function scheduleCompute() {
+  if (rafId) cancelAnimationFrame(rafId)
+  rafId = requestAnimationFrame(() => {
+    rafId = null
+    computeLinksFor(graphWrap.value, links, svgW, svgH)
+  })
+}
+
+function scheduleComputeFull() {
+  if (rafIdFull) cancelAnimationFrame(rafIdFull)
+  rafIdFull = requestAnimationFrame(() => {
+    rafIdFull = null
+    computeLinksFor(fullGraphWrap.value, fullLinks, fullSvgW, fullSvgH)
+  })
+}
+
+function onWindowResize() {
+  scheduleCompute()
+  if (fullscreen.value) scheduleComputeFull()
+}
+
+onMounted(() => {
+  if (typeof ResizeObserver !== 'undefined') {
+    ro = new ResizeObserver(() => scheduleCompute())
+    roFull = new ResizeObserver(() => scheduleComputeFull())
+  }
+  window.addEventListener('resize', onWindowResize)
+})
+
+onBeforeUnmount(() => {
+  if (ro) { try { ro.disconnect() } catch (e) {} ro = null }
+  if (roFull) { try { roFull.disconnect() } catch (e) {} roFull = null }
+  window.removeEventListener('resize', onWindowResize)
+  if (rafId) cancelAnimationFrame(rafId)
+  if (rafIdFull) cancelAnimationFrame(rafIdFull)
+})
+
+// 观察内嵌图：showLogic 打开或数据变化时重算
+watch([showLogic, treePoints], async () => {
+  if (!showLogic.value) return
+  await nextTick()
+  if (ro && graphWrap.value) {
+    try { ro.disconnect() } catch (e) {}
+    ro.observe(graphWrap.value)
+  }
+  scheduleCompute()
+})
+
+// 观察全屏图：fullscreen 打开或数据变化时重算
+watch([fullscreen, treePoints], async () => {
+  if (!fullscreen.value) return
+  await nextTick()
+  if (roFull && fullGraphWrap.value) {
+    try { roFull.disconnect() } catch (e) {}
+    roFull.observe(fullGraphWrap.value)
+  }
+  scheduleComputeFull()
+})
 </script>
 
 <style scoped>
@@ -485,4 +852,445 @@ const getRankClass = (index) => {
 }
 .list-enter-from { opacity: 0; transform: translateX(30px); }
 .list-leave-to { opacity: 0; transform: translateX(-30px); }
+
+/* ── 论证链路切换按钮 ── */
+.logic-toggle-btn {
+  padding: 6px 14px;
+  background: linear-gradient(135deg, #b07f5b 0%, #8b6240 100%);
+  color: white;
+  border: none;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(176, 127, 91, 0.3);
+  transition: all 0.2s ease;
+}
+
+.logic-toggle-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(176, 127, 91, 0.4);
+}
+
+.logic-toggle-btn.active {
+  background: linear-gradient(135deg, #3a9fd8 0%, #1c7fb8 100%);
+  box-shadow: 0 2px 8px rgba(58, 159, 216, 0.4);
+}
+
+.logic-toggle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 论证链路面板 ── */
+.logic-panel {
+  margin-bottom: 24px;
+  padding: 20px;
+  background: linear-gradient(135deg, #fbf6ee 0%, #ffffff 100%);
+  border-radius: 14px;
+  border: 1px solid #e8dcc8;
+  box-shadow: 0 4px 16px rgba(192, 144, 96, 0.08);
+  animation: fadeIn 0.4s ease;
+}
+
+.logic-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed #e8dcc8;
+}
+
+.logic-stats {
+  font-size: 13px;
+  color: #8a7e72;
+  font-weight: 600;
+  margin-right: auto;
+}
+
+.logic-hint {
+  font-size: 11px;
+  color: #8a7e72;
+  padding: 4px 10px;
+  background: rgba(176, 127, 91, 0.08);
+  border-radius: 10px;
+  letter-spacing: 0.3px;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.logic-btn {
+  padding: 6px 14px;
+  background: #ffffff;
+  color: #b07f5b;
+  border: 1px solid #e8dcc8;
+  border-radius: 18px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.logic-btn:hover:not(:disabled) {
+  background: #fbf6ee;
+  border-color: #b07f5b;
+}
+
+.logic-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.logic-btn.primary {
+  background: linear-gradient(135deg, #3a9fd8 0%, #1c7fb8 100%);
+  color: white;
+  border-color: transparent;
+  box-shadow: 0 2px 8px rgba(58, 159, 216, 0.3);
+}
+
+.logic-btn.primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(58, 159, 216, 0.45);
+}
+
+.logic-btn.close {
+  background: #ff6b6b;
+  color: white;
+  border-color: transparent;
+}
+
+.logic-render-wrapper {
+  width: 100%;
+  min-height: 200px;
+  max-height: 600px;
+  overflow: auto;
+  padding: 12px;
+  background: #ffffff;
+  border-radius: 10px;
+  border: 1px solid #f0e6d6;
+}
+
+/* ── 论证链路：SVG 关系图容器 ── */
+.logic-graph {
+  position: relative;
+  width: 100%;
+  padding: 16px 8px;
+  min-height: 320px;
+  overflow: auto;
+  max-height: 680px;
+  border-radius: 10px;
+}
+
+.logic-graph::-webkit-scrollbar { width: 8px; height: 8px; }
+.logic-graph::-webkit-scrollbar-track { background: #f5f1ea; border-radius: 4px; }
+.logic-graph::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #b07f5b, #8b6240); border-radius: 4px; }
+
+.logic-graph-full {
+  max-height: none;
+  min-height: 100%;
+  padding: 24px 16px;
+}
+
+.logic-graph-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: visible;
+}
+
+.logic-graph-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(160px, 0.9fr) minmax(240px, 1.6fr) minmax(220px, 1.6fr);
+  gap: 28px 56px;
+  align-items: start;
+  min-width: 720px;
+}
+
+.logic-graph-grid-full {
+  grid-template-columns: minmax(200px, 1fr) minmax(320px, 2fr) minmax(300px, 2fr);
+  gap: 36px 80px;
+  min-width: 960px;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.col-root {
+  position: sticky;
+  top: 8px;
+  align-self: start;
+  justify-content: center;
+  min-height: 120px;
+}
+
+.node {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+  word-break: break-word;
+}
+
+.node-root {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 22px;
+  background: linear-gradient(135deg, #3a9fd8 0%, #1c7fb8 100%);
+  color: #ffffff;
+  border-radius: 14px;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 6px 20px rgba(58, 159, 216, 0.3);
+  max-width: 100%;
+}
+
+.node-root-full {
+  padding: 20px 28px;
+  font-size: 18px;
+}
+
+.node-root-icon { font-size: 20px; }
+.node-root-text { line-height: 1.4; }
+
+.node-point {
+  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid #e8dcc8;
+  border-left: 4px solid #74c0fc;
+  border-radius: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 2px 10px rgba(192, 144, 96, 0.08);
+}
+
+.node-point:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(58, 159, 216, 0.16);
+}
+
+.node-point.importance-critical { border-left-color: #ff6b6b; background: linear-gradient(135deg, #fff5f5 0%, #ffffff 100%); }
+.node-point.importance-high     { border-left-color: #ffa94d; background: linear-gradient(135deg, #fff9f0 0%, #ffffff 100%); }
+.node-point.importance-medium   { border-left-color: #ffd43b; background: linear-gradient(135deg, #fffbf0 0%, #ffffff 100%); }
+.node-point.importance-normal   { border-left-color: #74c0fc; background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%); }
+
+.node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.node-badge {
+  font-size: 12px;
+  font-weight: 800;
+  color: #b07f5b;
+  background: rgba(176, 127, 91, 0.12);
+  padding: 3px 8px;
+  border-radius: 8px;
+  letter-spacing: 0.3px;
+}
+
+.node-label {
+  padding: 3px 10px;
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  color: #2e7d32;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.node-score {
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 12px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.node-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #3a3630;
+  font-weight: 500;
+}
+
+.node-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: #8a7e72;
+}
+
+.node-meta span {
+  padding: 2px 8px;
+  background: #f5f1ea;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+.node-evidence {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #f0fff4 0%, #ffffff 100%);
+  border: 1px solid #d4f1db;
+  border-left: 3px solid #51cf66;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #3a3630;
+  cursor: pointer;
+  box-shadow: 0 1px 6px rgba(81, 207, 102, 0.08);
+}
+
+.node-evidence:hover {
+  transform: translateX(2px);
+  background: linear-gradient(135deg, #e6ffe8 0%, #f0fff4 100%);
+}
+
+.ev-arrow {
+  color: #51cf66;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.ev-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.ev-page {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #868e96;
+  background: #f1f3f5;
+  padding: 2px 8px;
+  border-radius: 8px;
+  align-self: flex-start;
+}
+
+/* 悬停联动样式 */
+.node-active {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(58, 159, 216, 0.28);
+  opacity: 1 !important;
+}
+
+.node-dim {
+  opacity: 0.32;
+}
+
+.logic-link {
+  fill: none;
+  transition: opacity 0.2s ease, stroke-width 0.2s ease;
+  opacity: 0.62;
+}
+
+.link-active {
+  opacity: 1;
+  stroke-width: 3 !important;
+  filter: drop-shadow(0 2px 6px rgba(58, 159, 216, 0.35));
+}
+
+.link-dim {
+  opacity: 0.12;
+}
+
+.logic-empty {
+  text-align: center;
+  color: #8a7e72;
+  font-style: italic;
+  padding: 60px 20px;
+}
+
+/* ── 全屏 Modal ── */
+.logic-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.logic-modal-content {
+  width: min(96vw, 1400px);
+  height: min(92vh, 900px);
+  background: #ffffff;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+}
+
+.logic-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+  background: linear-gradient(135deg, #fbf6ee 0%, #ffffff 100%);
+}
+
+.logic-modal-body::-webkit-scrollbar { width: 10px; }
+.logic-modal-body::-webkit-scrollbar-track { background: #f5f1ea; }
+.logic-modal-body::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #b07f5b, #8b6240);
+  border-radius: 5px;
+}
+
+.logic-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: linear-gradient(135deg, #fbf6ee 0%, #f5f1ea 100%);
+  border-bottom: 1px solid #e8dcc8;
+  flex-shrink: 0;
+}
+
+.logic-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #3a3630;
+}
+
+.logic-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.logic-modal-actions .logic-stats {
+  font-size: 13px;
+  color: #8a7e72;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
 </style>

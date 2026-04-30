@@ -25,6 +25,7 @@ backend/exports/*
 backend/annotated/*
 backend/parsed_output/*
 backend/.hf_cache/
+backend/.scholar_cache/
 backend/2.70.0
 !backend/uploads/.gitkeep
 !backend/exports/.gitkeep
@@ -34,6 +35,9 @@ backend/2.70.0
 # Test files
 backend/test_doc.*
 backend/backend.log
+
+# Personal documents (do not commit)、
+论文大纲.docx
 
 # Node.js
 node_modules/

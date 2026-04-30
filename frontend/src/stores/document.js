@@ -11,7 +11,13 @@ export const useDocumentStore = defineStore('document', {
     historyTotal: 0,
     apiProvider: 'deepseek',   // 当前选择的 API 提供商: 'deepseek' | 'qwen' | 'pipellm'
     apiModel: '',               // 前端指定的具体模型名（空串表示使用 provider 默认模型）
-    availableProviders: []      // 从后端获取的可用 provider 列表
+    availableProviders: [],     // 从后端获取的可用 provider 列表
+    // 论证链路（Mermaid 文本 + 树结构）
+    logicTree: null,
+    logicLoading: false,
+    // 相关文献推荐
+    recommendations: { query: '', results: [], sources: {}, fromCache: false, cacheReason: '', cooldownRemaining: 0, warning: '' },
+    recommendLoading: false
   }),
 
   actions: {
@@ -208,6 +214,59 @@ export const useDocumentStore = defineStore('document', {
         console.error('获取 provider 列表失败:', error)
       }
       return []
+    },
+
+    // ── 论证链路：从后端获取 Mermaid 与树结构 ──
+    async fetchLogicTree(recordId) {
+      this.logicLoading = true
+      try {
+        const resp = await axios.get(`/api/logic/${recordId}`)
+        if (resp.data.success) {
+          this.logicTree = resp.data.logic
+          return this.logicTree
+        }
+      } catch (error) {
+        console.error('获取论证链路失败:', error)
+      } finally {
+        this.logicLoading = false
+      }
+      this.logicTree = null
+      return null
+    },
+
+    // ── 相关文献推荐：从后端获取 LLM + 验证后的推荐结果 ──
+    async fetchRecommendations(recordId, max = 6, options = {}) {
+      this.recommendLoading = true
+      try {
+        const params = { max }
+        if (options.force) params.force = 1
+        if (options.provider) params.provider = options.provider
+        const resp = await axios.get(`/api/recommend/${recordId}`, { params })
+        if (resp.data.success) {
+          this.recommendations = {
+            query: resp.data.query || '',
+            results: resp.data.results || [],
+            sources: resp.data.sources || {},
+            fromCache: !!resp.data.from_cache,
+            cacheReason: resp.data.cache_reason || '',
+            cooldownRemaining: resp.data.cooldown_remaining || 0,
+            warning: resp.data.warning || ''
+          }
+          return this.recommendations
+        }
+      } catch (error) {
+        console.error('获取相关推荐失败:', error)
+      } finally {
+        this.recommendLoading = false
+      }
+      this.recommendations = { query: '', results: [], sources: {}, fromCache: false, cacheReason: '', cooldownRemaining: 0, warning: '' }
+      return this.recommendations
+    },
+
+    // 清空推荐与论证链路缓存（切换文档时调用）
+    clearAuxiliary() {
+      this.logicTree = null
+      this.recommendations = { query: '', results: [], sources: {}, fromCache: false, cacheReason: '', cooldownRemaining: 0, warning: '' }
     },
 
     // 发送 AI 对话消息

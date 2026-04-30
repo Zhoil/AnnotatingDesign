@@ -19,12 +19,68 @@ print(f"📦 HuggingFace 模型缓存路径: {hf_cache_dir}")
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 import json
+import hashlib
 from document_parser import DocumentParser
 from text_analyzer import TextAnalyzer
 from database import Database
+from logic_builder import build_logic_tree
+from scholar_api import recommend_for_record
+from llm_recommender import recommend_with_llm
+
+# ── 文献推荐缓存常量 ──
+RECOMMEND_TTL_SECONDS = 2 * 24 * 3600   # 2 天缓存
+RECOMMEND_CLICK_COOLDOWN = 10           # 10s 点击疲劳
+
+
+def _parse_db_ts(ts):
+    """将 SQLite 的 CURRENT_TIMESTAMP 字符串解析为 datetime，失败返回 None。"""
+    if not ts:
+        return None
+    if isinstance(ts, datetime):
+        return ts
+    for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S'):
+        try:
+            return datetime.strptime(str(ts), fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _compute_file_hash(filepath):
+    """对上传文件二进制内容计算 SHA256。"""
+    h = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        for chunk in iter(lambda: f.read(8192), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _compute_text_hash(text):
+    """对网页文本计算 SHA256。"""
+    return hashlib.sha256((text or '').encode('utf-8')).hexdigest()
+
+
+def _record_to_upload_response(record, extra=None):
+    """将历史 record 构造成 /api/upload 相同格式的响应。"""
+    payload = {
+        'success': True,
+        'from_cache': True,
+        'record_id': record['id'],
+        'filename': record.get('filename'),
+        'title': record.get('title'),
+        'content': record.get('content'),
+        'keypoints': record.get('keypoints', []),
+        'summary': record.get('summary', {}),
+        'statistics': record.get('statistics', {}),
+        'highlights': record.get('highlights', []),
+        'annotated_url': record.get('annotated_url')
+    }
+    if extra:
+        payload.update(extra)
+    return payload
 
 app = Flask(__name__)
 CORS(app)
@@ -136,7 +192,25 @@ def upload_file():
         unique_filename = f"{timestamp}_{filename}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
         file.save(filepath)
-        
+
+        # ── 文档哈希去重：相同内容已解析过则直接返回数据库结果 ──
+        try:
+            file_hash = _compute_file_hash(filepath)
+        except Exception as e:
+            print(f'⚠️ 计算文件哈希失败: {e}')
+            file_hash = None
+
+        if file_hash:
+            existing = db.find_by_hash(file_hash)
+            if existing:
+                print(f'✅ 命中文档缓存 id={existing["id"]} hash={file_hash[:10]}…')
+                # 删除刚保存的重复文件，避免磁盘膨胀
+                try:
+                    os.remove(filepath)
+                except Exception:
+                    pass
+                return jsonify(_record_to_upload_response(existing))
+
         # 解析文档
         parse_result = parser.parse(filepath)
         
@@ -196,12 +270,14 @@ def upload_file():
         record_id = db.save_analysis(
             filename=filename,
             original_text=text_content,
-            analysis_result=analysis_result
+            analysis_result=analysis_result,
+            file_hash=file_hash
         )
         
         # 返回结果
         return jsonify({
             'success': True,
+            'from_cache': False,
             'record_id': record_id,
             'filename': filename,
             'title': analysis_result.get('title', filename),
@@ -240,7 +316,14 @@ def upload_url():
 
         if not text_content:
             return jsonify({'error': '网页内容为空'}), 500
-        
+
+        # ── 网页文本哈希去重 ──
+        url_hash = _compute_text_hash(url + '\n' + text_content[:2000])
+        existing = db.find_by_hash(url_hash)
+        if existing:
+            print(f'✅ 命中网页缓存 id={existing["id"]} hash={url_hash[:10]}…')
+            return jsonify(_record_to_upload_response(existing, {'is_web': True}))
+
         # 分析文本（传入结构化信息和 API 提供商）
         api_provider = data.get('api_provider', 'deepseek')
         api_model = data.get('api_model', '')
@@ -275,11 +358,13 @@ def upload_url():
         record_id = db.save_analysis(
             filename=url,
             original_text=text_content,
-            analysis_result=analysis_result
+            analysis_result=analysis_result,
+            file_hash=url_hash
         )
         
         return jsonify({
             'success': True,
+            'from_cache': False,
             'record_id': record_id,
             'filename': url,
             'title': analysis_result.get('title', '网页文章'),
@@ -402,7 +487,7 @@ def compare_documents():
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    """AI 对话接口（使用 CHAT_PROVIDER 配置的模型）"""
+    """AI 对话接口（固定使用 DeepSeek-R1）"""
     try:
         data = request.json
         message = data.get('message', '').strip()
@@ -431,6 +516,113 @@ def get_providers():
         return jsonify({'success': True, 'providers': providers})
     except Exception as e:
         return jsonify({'error': f'获取 provider 列表失败: {str(e)}'}), 500
+
+
+@app.route('/api/logic/<int:record_id>', methods=['GET'])
+def get_logic_tree(record_id):
+    """获取文档的论证链路（论点→论据），返回 Mermaid 源码与结构化树。"""
+    try:
+        record = db.get_record(record_id)
+        if not record:
+            return jsonify({'error': '记录不存在'}), 404
+
+        max_points = request.args.get('max_points', 6, type=int)
+        max_evidence = request.args.get('max_evidence', 3, type=int)
+        logic = build_logic_tree(record, max_points=max_points, max_evidence_per_point=max_evidence)
+        return jsonify({'success': True, 'logic': logic})
+    except Exception as e:
+        print(f"⚠️ 论证链路生成失败: {e}")
+        return jsonify({'error': f'论证链路生成失败: {str(e)}'}), 500
+
+
+@app.route('/api/recommend/<int:record_id>', methods=['GET'])
+def get_recommendations(record_id):
+    """LLM 驱动的文献推荐，配合 2 天 DB 缓存 + 10s 点击疲劳 + flag 标记。
+
+    查询参数：
+      - max: 1~12（默认 6）
+      - provider: LLM 提供商，默认 deepseek
+      - force=1: 跳过 TTL 和 flag 判断强制重新生成（仍受 10s 点击疲劳保护）
+    """
+    try:
+        record = db.get_record(record_id)
+        if not record:
+            return jsonify({'error': '记录不存在'}), 404
+
+        max_results = request.args.get('max', 6, type=int)
+        max_results = max(1, min(max_results, 12))
+        provider = request.args.get('provider', 'deepseek')
+        force = request.args.get('force', '0') == '1'
+
+        state = db.get_recommend_state(record_id) or {}
+        now = datetime.now()
+
+        # ── 规则1：10s 点击疲劳 ──
+        # 时间间隔很短且有缓存：直接返回缓存；无缓存：直接返回 429 提示「冷却中」
+        last_click = _parse_db_ts(state.get('last_click_at'))
+        if last_click:
+            elapsed = (now - last_click).total_seconds()
+            if 0 <= elapsed < RECOMMEND_CLICK_COOLDOWN:
+                if state.get('flag') == 1 and state.get('cache'):
+                    try:
+                        cached = json.loads(state['cache'])
+                    except Exception:
+                        cached = {'query': '', 'results': [], 'sources': {}}
+                    cached['success'] = True
+                    cached['from_cache'] = True
+                    cached['cache_reason'] = 'click_throttle'
+                    cached['cooldown_remaining'] = int(RECOMMEND_CLICK_COOLDOWN - elapsed)
+                    return jsonify(cached)
+                # 没有缓存但处于冷却期：拒绝频繁调用
+                return jsonify({
+                    'success': True,
+                    'query': '',
+                    'results': [],
+                    'sources': {},
+                    'from_cache': False,
+                    'cooldown_remaining': int(RECOMMEND_CLICK_COOLDOWN - elapsed),
+                    'warning': f'点击过于频繁，请 {int(RECOMMEND_CLICK_COOLDOWN - elapsed)}s 后再试'
+                }), 200
+
+        # 更新点击时间戳（无论后续是否命中缓存）
+        db.touch_recommend_click(record_id)
+
+        # ── 规则2：flag=1 且未超过 2 天 → 直读缓存 ──
+        if not force and state.get('flag') == 1 and state.get('cache'):
+            updated_at = _parse_db_ts(state.get('updated_at'))
+            if updated_at and (now - updated_at).total_seconds() < RECOMMEND_TTL_SECONDS:
+                try:
+                    cached = json.loads(state['cache'])
+                    cached['success'] = True
+                    cached['from_cache'] = True
+                    cached['cache_reason'] = 'ttl_hit'
+                    return jsonify(cached)
+                except Exception as e:
+                    print(f'⚠️ 缓存解析失败，将重新生成: {e}')
+
+        # ── 规则3：flag=0 或 TTL 过期 → 调用 LLM 重新生成 ──
+        try:
+            result = recommend_with_llm(
+                record,
+                analyzer.llm_service,
+                provider=provider,
+                max_results=max_results
+            )
+        except Exception as e:
+            print(f'⚠️ LLM 推荐失败，降级到传统 scholar_api: {e}')
+            result = recommend_for_record(record, max_results=max_results)
+
+        # 写入缓存（即使 results 为空也保存，避免下次频繁重试；用户可 force=1 刷新）
+        try:
+            db.save_recommend_cache(record_id, result)
+        except Exception as e:
+            print(f'⚠️ 写入推荐缓存失败: {e}')
+
+        return jsonify({'success': True, 'from_cache': False, **result})
+    except Exception as e:
+        print(f"⚠️ 文献推荐失败: {e}")
+        return jsonify({'success': True, 'query': '', 'results': [], 'sources': {},
+                        'from_cache': False, 'warning': str(e)})
 
 
 if __name__ == '__main__':
